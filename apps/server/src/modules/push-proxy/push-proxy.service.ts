@@ -1,6 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, HttpException, Inject, Injectable } from '@nestjs/common';
 
 import { PushServiceWhitelistConfig } from '../../config/push-service-whitelist.config';
+
+import { SendPushNotificationReqBody } from './push-proxy.dto';
 
 @Injectable()
 export class PushProxyService {
@@ -8,6 +10,30 @@ export class PushProxyService {
     @Inject(PushServiceWhitelistConfig)
     private readonly pushServiceWhitelistConfig: PushServiceWhitelistConfig,
   ) {}
+
+  async sendPushNotification(reqBody: SendPushNotificationReqBody) {
+    const url = this.sanitizeUrl(reqBody.endpoint);
+    if (!url) {
+      throw new BadRequestException('Invalid endpoint');
+    }
+
+    try {
+      const response = await fetch(url.toString(), {
+        method: 'POST',
+        headers: reqBody.headers,
+        body: typeof reqBody.body === 'string' ? reqBody.body : JSON.stringify(reqBody.body),
+      });
+
+      if (!response.ok) {
+        throw new HttpException(`Push notification failed with status ${response.status}`, response.status);
+      }
+    } catch (error) {
+      console.error('Error sending push notification:', error);
+      throw new HttpException('Failed to send push notification', 500);
+    }
+
+    return { success: true };
+  }
 
   public sanitizeUrl(unsafeUrlInput: string): URL | null {
     try {

@@ -1,4 +1,13 @@
-import { IsString, IsNumber, IsJSON, IsJWT } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsObject, IsOptional, IsUrl } from 'class-validator';
 
-export class SendPushNotificationReqBody {}
+export class SendPushNotificationReqBody {
+  @IsUrl()
+  endpoint: string;
+
+  @IsOptional()
+  body?: Record<string, any> | string;
+
+  @IsOptional()
+  @IsObject()
+  headers?: Record<string, string>;
+}
