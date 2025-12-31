@@ -1,0 +1,14 @@
+{
+  "name": "baab",
+  "workspaces": [
+    "apps/web",
+    "apps/server"
+  ],
+  "devDependencies": {
+    "prettier": "3.5.3",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
