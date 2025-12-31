@@ -1,6 +1,7 @@
 importScripts('sw-lib.js');
 
-const PROXY_URL = 'http://localhost:3000/push-proxy';
+const params = new URLSearchParams(self.location.search);
+const PROXY_URL = params.get('proxyUrl') || 'http://localhost:3000/push-proxy';
 
 // Helper to get VAPID keys from storage
 async function getVapidKeys() {

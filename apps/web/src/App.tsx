@@ -4,7 +4,7 @@ import './App.css';
 import { deserializeVapidKeys, fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
 import { encryptWebPush, arrayBufferToBase64Url } from './web-push-encryption';
 
-const PROXY_URL = 'http://localhost:3000/push-proxy';
+const PROXY_URL = import.meta.env.VITE_PROXY_URL;
 
 type VapidKeys = { publicKey: string; privateKey: string };
 type RemoteConfig = { subscription: PushSubscriptionJSON; vapidKeys: VapidKeys };
@@ -211,7 +211,7 @@ function App() {
 
     let sub = subscription;
     if (!sub) {
-      const registration = await navigator.serviceWorker.register('/sw.js');
+      const registration = await navigator.serviceWorker.register(`/sw.js?proxyUrl=${encodeURIComponent(PROXY_URL)}`);
       await navigator.serviceWorker.ready;
       sub = await registration.pushManager.subscribe({
         userVisibleOnly: true,
