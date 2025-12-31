@@ -13,8 +13,6 @@ async function bootstrap() {
     origin: processConfig.webOrigin,
   });
 
-  console.log(processConfig.webOrigin);
-
   SwaggerModule.setup(
     'openapi',
     app,

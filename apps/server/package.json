@@ -22,6 +22,7 @@
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.0.1",
     "@types/express": "^5.0.0",
+    "@types/web-push": "^3.6.4",
     "globals": "^15.14.0",
     "source-map-support": "^0.5.21",
     "tsconfig-paths": "^4.2.0"
