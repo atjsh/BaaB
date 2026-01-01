@@ -317,9 +317,10 @@ function Receive() {
       <form className=" flex flex-col gap-10 max-w-md " onSubmit={handleFormSubmit}>
         <div className=" flex flex-col gap-1 ">
           <label htmlFor="serverUrl">
-            <span className=" font-bold">Enter Server URL</span>
+            <span className=" font-bold">Enter the link</span>
             <p className=" text-sm block">
-              To get started, paste the server URL. <br />
+              To get started, paste the link.
+              <br />
               If you don't have one, ask the sharer for one. <br />
               Sharer could send you the URL via chat, email, etc.
             </p>

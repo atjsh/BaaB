@@ -60,7 +60,9 @@ function RouteComponent() {
 
   // Server State
   const [clients, setClients] = useState<RemoteConfig[]>([]);
-  const [assetText, setAssetText] = useState(() => localStorage.getItem('baab_asset_draft') || '');
+  const [assetText, setAssetText] = useState(
+    () => localStorage.getItem('baab_asset_draft') || 'This is a secret message!',
+  );
 
   const addLog = useCallback((msg: string) => {
     setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
@@ -359,7 +361,7 @@ function RouteComponent() {
               rows={3}
             />
             <div className="mt-2">
-              <span>Or scan this QR code (click to enlarge):</span>
+              <span className="text-sm block">Or scan this QR code (click to enlarge):</span>
               <div
                 className={`mt-1 p-2 border ${enlargeQr ? 'w-full' : 'w-48'} rounded cursor-pointer`}
                 onClick={() => setEnlargeQr(!enlargeQr)}
@@ -367,12 +369,15 @@ function RouteComponent() {
                 <QRCode value={getShareLink()} />
               </div>
             </div>
+            <div>
+              <p className=" block">Note: Only share this link with people you trust.</p>
+            </div>
           </div>
 
           <div className="flex flex-col gap-2">
             <label htmlFor="assetText">
               <span className=" font-bold">Asset to Share</span>
-              <p className=" text-sm block">Enter the text or HTML content you want to share with connected clients.</p>
+              <p className=" text-sm block">Enter the text you want to share with connected clients.</p>
             </label>
             <textarea
               id="assetText"
@@ -380,7 +385,7 @@ function RouteComponent() {
               readOnly={isBroadcasting}
               value={assetText}
               onChange={(e) => setAssetText(e.target.value)}
-              placeholder="Enter text or HTML to share..."
+              placeholder="Enter text to share..."
               rows={5}
               className="w-full border px-2 py-1 rounded text-sm read-only:opacity-50"
             />
