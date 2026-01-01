@@ -1,8 +1,12 @@
 import { StrictMode } from 'react';
 import ReactDOM from 'react-dom/client';
 import { RouterProvider, createRouter } from '@tanstack/react-router';
+import { registerSW } from 'virtual:pwa-register';
 
 import './index.css';
+
+// Register Service Worker
+registerSW({ immediate: true });
 
 // Import the generated route tree
 import { routeTree } from './routeTree.gen';

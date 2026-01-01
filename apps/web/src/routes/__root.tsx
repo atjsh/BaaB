@@ -11,7 +11,7 @@ const RootLayout = () => (
             <b>🌏 BaaB</b>
           </Link>
         </h1>
-        <span>Share texts securely</span>
+        <span>Share text/images securely</span>
       </div>
       <hr />
       <nav className="p-2 flex gap-2">

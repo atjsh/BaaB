@@ -1,3 +1,5 @@
+import React from 'react';
+
 export const HowToUse: React.FC = () => {
   const hostname = window.location.hostname;
   return (

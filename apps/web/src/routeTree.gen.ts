@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ShareRouteImport } from './routes/share'
 import { Route as ReceiveRouteImport } from './routes/receive'
-import { Route as LegacyRouteImport } from './routes/legacy'
 import { Route as IndexRouteImport } from './routes/index'
 
 const ShareRoute = ShareRouteImport.update({
@@ -24,11 +23,6 @@ const ReceiveRoute = ReceiveRouteImport.update({
   path: '/receive',
   getParentRoute: () => rootRouteImport,
 } as any)
-const LegacyRoute = LegacyRouteImport.update({
-  id: '/legacy',
-  path: '/legacy',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -37,34 +31,30 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/legacy': typeof LegacyRoute
   '/receive': typeof ReceiveRoute
   '/share': typeof ShareRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/legacy': typeof LegacyRoute
   '/receive': typeof ReceiveRoute
   '/share': typeof ShareRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/legacy': typeof LegacyRoute
   '/receive': typeof ReceiveRoute
   '/share': typeof ShareRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/legacy' | '/receive' | '/share'
+  fullPaths: '/' | '/receive' | '/share'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/legacy' | '/receive' | '/share'
-  id: '__root__' | '/' | '/legacy' | '/receive' | '/share'
+  to: '/' | '/receive' | '/share'
+  id: '__root__' | '/' | '/receive' | '/share'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  LegacyRoute: typeof LegacyRoute
   ReceiveRoute: typeof ReceiveRoute
   ShareRoute: typeof ShareRoute
 }
@@ -85,13 +75,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ReceiveRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/legacy': {
-      id: '/legacy'
-      path: '/legacy'
-      fullPath: '/legacy'
-      preLoaderRoute: typeof LegacyRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -104,7 +87,6 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  LegacyRoute: LegacyRoute,
   ReceiveRoute: ReceiveRoute,
   ShareRoute: ShareRoute,
 }

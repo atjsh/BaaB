@@ -18,6 +18,9 @@
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,
+    "paths": {
+      "@baab/shared": ["../../packages/shared/src/index.ts"]
+    },
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,

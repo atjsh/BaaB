@@ -2,7 +2,8 @@
   "name": "baab",
   "workspaces": [
     "apps/web",
-    "apps/server"
+    "apps/server",
+    "packages/*"
   ],
   "devDependencies": {
     "prettier": "3.5.3",

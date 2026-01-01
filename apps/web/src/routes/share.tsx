@@ -1,29 +1,28 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { compress, decompress } from 'lz-string';
-import encodeQR from 'qr';
-import { useCallback, useEffect, useState } from 'react';
-import { deserializeVapidKeys, fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
-import { blobToWebP } from 'webp-converter-browser';
+import { useState } from 'react';
 
-import { dbClear, dbDelete, dbGet, dbGetAll, dbPut } from '../db';
-import { arrayBufferToBase64Url, encryptWebPush } from '../web-push-encryption';
+import { HowToUse } from '../components/HowToUse';
+import { DirectoryForm } from '../components/DirectoryForm';
+import { ImageForm } from '../components/ImageForm';
+import { QRCode } from '../components/QRCode';
+import { SessionInfo } from '../components/SessionInfo';
+import { useBaab } from '../hooks/useBaab';
+import { useBaabServer } from '../hooks/useBaabServer';
 
-import { HowToUse } from './-hot-to-use';
-import { SessionInfo } from './-session-info';
+const formatBytes = (bytes: number) => {
+  if (!bytes || bytes < 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, idx);
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[idx]}`;
+};
 
-const PROXY_URL = import.meta.env.VITE_PROXY_URL;
-
-type VapidKeys = { publicKey: string; privateKey: string };
-type RemoteConfig = { subscription: PushSubscriptionJSON; vapidKeys: VapidKeys };
-type MessagePayload = {
-  type: 'HANDSHAKE' | 'ASSET' | 'ACK' | 'CHUNK';
-  senderConfig?: RemoteConfig;
-  asset?: string;
-  assetMode?: 'text' | 'image';
-  id?: string;
-  index?: number;
-  total?: number;
-  data?: string;
+const humanBps = (bps: number) => {
+  if (!bps || bps < 0) return '0 B/s';
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+  const idx = Math.min(Math.floor(Math.log(bps) / Math.log(1024)), units.length - 1);
+  const value = bps / Math.pow(1024, idx);
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[idx]}`;
 };
 
 export const Route = createFileRoute('/share')({
@@ -41,525 +40,214 @@ export const Route = createFileRoute('/share')({
   }),
 });
 
-const QRCode = ({ value }: { value: string }) => {
-  const [dataUrl, setDataUrl] = useState<string>('');
-
-  useEffect(() => {
-    const qr = encodeQR(value, 'svg');
-    const blob = new Blob([qr], { type: 'image/svg+xml' });
-    const url = URL.createObjectURL(blob);
-    setDataUrl(url);
-    return () => {
-      URL.revokeObjectURL(url);
-    };
-  }, [value]);
-
-  return <img src={dataUrl} alt="QR Code" className=" w-full h-full" />;
-};
-
-const ImageForm: React.FC<{ setImageAsset: (dataUrl: string) => void }> = ({ setImageAsset }) => {
-  const [imageDraft, setImageDraft] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (imageDraft) {
-      setImageAsset(imageDraft);
-    }
-  }, [imageDraft, setImageAsset]);
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const originalDim = await new Promise<{ width: number; height: number }>((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-          resolve({ width: img.width, height: img.height });
-        };
-        img.src = URL.createObjectURL(file);
-      });
-
-      const maxWidth = 1000;
-      const maxHeight = 1000;
-      let targetWidth = originalDim.width;
-      let targetHeight = originalDim.height;
-
-      if (originalDim.width > maxWidth || originalDim.height > maxHeight) {
-        const widthRatio = maxWidth / originalDim.width;
-        const heightRatio = maxHeight / originalDim.height;
-        const minRatio = Math.min(widthRatio, heightRatio);
-        targetWidth = Math.floor(originalDim.width * minRatio);
-        targetHeight = Math.floor(originalDim.height * minRatio);
-      }
-
-      const webpBlob = await blobToWebP(file, { quality: 0.5, width: targetWidth, height: targetHeight });
-      // Convert to base32768
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImageDraft(reader.result as string);
-      };
-      reader.readAsDataURL(webpBlob);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-2">
-      <label htmlFor="imageUpload" className="font-bold">
-        Upload Image
-      </label>
-      <input type="file" id="imageUpload" accept="image/*" onChange={handleFileChange} />
-      {imageDraft && (
-        <div className="mt-2">
-          <img src={imageDraft} alt="Thumbnail Preview" className="max-w-xs" />
-        </div>
-      )}
-    </div>
-  );
-};
-
 function RouteComponent() {
-  const [vapidKeys, setVapidKeys] = useState<VapidKeys | null>(null);
-  const [subscription, setSubscription] = useState<PushSubscription | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [isServerStarted, setIsServerStarted] = useState(false);
-  const [isBroadcasting, setIsBroadcasting] = useState(false);
+  const {
+    vapidKeys,
+    setVapidKeys,
+    subscription,
+    setSubscription,
+    logs,
+    addLog,
+    ensureKeysAndSubscription,
+    reset: resetBaab,
+  } = useBaab();
+
+  const {
+    isServerStarted,
+    isBroadcasting,
+    clients,
+    assetMode,
+    setAssetMode,
+    assetText,
+    setAssetText,
+    setImageAsset,
+    directoryAsset,
+    setDirectoryAsset,
+    chunkConcurrency,
+    chunkJitterMs,
+    lastBroadcastBytes,
+    lastBroadcastMs,
+    updateChunkConcurrency,
+    updateChunkJitterMs,
+    startServer,
+    registerAsset,
+    resetServer,
+  } = useBaabServer({
+    vapidKeys,
+    setVapidKeys,
+    subscription,
+    setSubscription,
+    addLog,
+    ensureKeysAndSubscription,
+    resetBaab,
+  });
+
   const [enlargeQr, setEnlargeQr] = useState(false);
 
-  // Server State
-  const [clients, setClients] = useState<RemoteConfig[]>([]);
-  const [assetMode, setAssetMode] = useState<'text' | 'image'>('text');
-  const [assetText, setAssetText] = useState('');
-  const [compressedAssetText, setCompressedAssetText] = useState('');
-  const [imageAsset, setImageAsset] = useState<string>('');
-
-  console.log({ imageAsset });
-
-  const addLog = useCallback((msg: string) => {
-    setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
-  }, []);
-
-  // Load current asset from cache on mount
-  useEffect(() => {
-    if (!assetText) {
-      dbGet('assets', 'latest-asset-mode').then((mode) => {
-        setAssetMode(mode === 'image' ? 'image' : 'text');
-        if (mode === 'image') {
-          dbGet('assets', 'latest-asset').then((data) => {
-            if (data) {
-              setImageAsset(data);
-            }
-          });
-        } else {
-          dbGet('assets', 'latest-asset').then((text) => {
-            if (text) {
-              setAssetText((prev) => prev || decompress(text));
-            } else {
-              setAssetText('This is a secret message!');
-            }
-          });
-        }
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    setCompressedAssetText(compress(assetText));
-  }, [assetText]);
-
-  // Load clients from cache when server is started
-  useEffect(() => {
-    if (isServerStarted) {
-      dbGetAll('clients').then((loadedClients) => {
-        const validClients = loadedClients.filter((c): c is RemoteConfig => c !== null);
-        setClients((prev) => {
-          // Merge with existing, avoiding duplicates
-          const existingEndpoints = new Set(prev.map((c) => c.subscription.endpoint));
-          const newClients = validClients.filter((c) => !existingEndpoints.has(c.subscription.endpoint));
-          return [...prev, ...newClients];
-        });
-        if (validClients.length > 0) {
-          addLog(`Restored ${validClients.length} clients from storage`);
-        }
-      });
-    }
-  }, [isServerStarted, addLog]);
-
-  // Initialize
-  useEffect(() => {
-    const init = async () => {
-      // Restore server state from storage
-      const storedMode = localStorage.getItem('baab_mode');
-      if (storedMode === 'server') {
-        setIsServerStarted(true);
-        addLog('Restored Server mode');
-      }
-
-      // Load existing keys
-      const storedKeys = localStorage.getItem('baab_vapid_keys');
-      if (storedKeys) {
-        setVapidKeys(JSON.parse(storedKeys));
-      }
-
-      // Check subscription
-      if ('serviceWorker' in navigator) {
-        const registration = await navigator.serviceWorker.ready;
-        const sub = await registration.pushManager.getSubscription();
-        if (sub) {
-          setSubscription(sub);
-          addLog('Found existing subscription');
-        }
-      }
-    };
-
-    init();
-  }, [addLog]);
-
-  const handleIncomingMessage = useCallback(
-    (payload: any) => {
-      console.log('[Share] handleIncomingMessage payload:', payload);
-      let data: MessagePayload;
-      try {
-        data = typeof payload === 'string' ? JSON.parse(payload) : payload;
-        if (payload.body && typeof payload.body === 'string') {
-          try {
-            data = JSON.parse(payload.body);
-          } catch {
-            addLog(`Received raw text: ${payload.body}`);
-            return;
-          }
-        }
-      } catch (e) {
-        console.error('[Share] Error parsing message:', e);
-        return;
-      }
-
-      if (data.type === 'HANDSHAKE' && data.senderConfig) {
-        addLog('Received HANDSHAKE');
-        if (isServerStarted) {
-          setClients((prev) => {
-            // Avoid duplicates
-            const exists = prev.find((c) => c.subscription.endpoint === data.senderConfig!.subscription.endpoint);
-            if (exists) {
-              return prev;
-            }
-            // Save to DB
-            if (data.senderConfig?.subscription.endpoint) {
-              dbPut('clients', data.senderConfig.subscription.endpoint, data.senderConfig);
-            }
-            return [...prev, data.senderConfig!];
-          });
-          addLog('New client connected!');
-        }
-      } else if (data.type === 'CHUNK') {
-        addLog(`Received CHUNK ${data.index! + 1}/${data.total}`);
-      }
-    },
-    [isServerStarted, addLog],
-  );
-
-  // Listen for SW messages
-  useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      console.log('[Share] SW Message:', event.data);
-      if (event.data && event.data.type === 'PUSH_RECEIVED') {
-        const payload = event.data.payload;
-        handleIncomingMessage(payload);
-      }
-    };
-    navigator.serviceWorker.addEventListener('message', handler);
-    return () => navigator.serviceWorker.removeEventListener('message', handler);
-  }, [handleIncomingMessage]);
-
-  const ensureKeysAndSubscription = async () => {
-    let keys = vapidKeys;
-    if (!keys) {
-      const k = await generateVapidKeys();
-      keys = await serializeVapidKeys(k);
-      setVapidKeys(keys);
-      localStorage.setItem('baab_vapid_keys', JSON.stringify(keys));
-      await dbPut('config', 'vapid-keys', keys);
-      addLog('Generated new VAPID keys');
-    } else {
-      await dbPut('config', 'vapid-keys', keys);
-    }
-
-    let sub = subscription;
-    if (!sub) {
-      const registration = await navigator.serviceWorker.register(`/sw.js?proxyUrl=${encodeURIComponent(PROXY_URL)}`);
-      await navigator.serviceWorker.ready;
-      sub = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: fromBase64Url(keys!.publicKey),
-      });
-      setSubscription(sub);
-      addLog('Subscribed to push notifications');
-    }
-    return { keys, sub };
-  };
-
-  const startServer = async () => {
-    await ensureKeysAndSubscription();
-    setIsServerStarted(true);
-    localStorage.setItem('baab_mode', 'server');
-    addLog('Server started');
-  };
-
-  const sendMessage = async (targetConfig: RemoteConfig, payload: MessagePayload) => {
-    try {
-      const vapidKeyPair = await deserializeVapidKeys(targetConfig.vapidKeys);
-
-      const send = async (p: MessagePayload) => {
-        const sub = targetConfig.subscription;
-        if (!sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
-          throw new Error('Invalid subscription data');
-        }
-        const encrypted = await encryptWebPush({
-          subscription: {
-            endpoint: sub.endpoint,
-            keys: {
-              p256dh: sub.keys.p256dh,
-              auth: sub.keys.auth,
-            },
-          },
-          vapidKeyPair,
-          payload: JSON.stringify(p),
-          proxyUrl: PROXY_URL,
-        });
-
-        const response = await fetch(PROXY_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            endpoint: encrypted.endpoint,
-            body: arrayBufferToBase64Url(encrypted.body),
-            headers: encrypted.headers,
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error(await response.text());
-        }
-        return true;
-      };
-
-      const payloadStr = JSON.stringify(payload);
-      const MAX_CHUNK_SIZE = 2048;
-
-      if (payloadStr.length <= MAX_CHUNK_SIZE) {
-        return await send(payload);
-      } else {
-        const id = crypto.randomUUID();
-        const total = Math.ceil(payloadStr.length / MAX_CHUNK_SIZE);
-        for (let i = 0; i < total; i++) {
-          const chunkData = payloadStr.slice(i * MAX_CHUNK_SIZE, (i + 1) * MAX_CHUNK_SIZE);
-          const chunkPayload: MessagePayload = {
-            type: 'CHUNK',
-            id,
-            index: i,
-            total,
-            data: chunkData,
-          };
-          await send(chunkPayload);
-        }
-        return true;
-      }
-    } catch (e: any) {
-      addLog(`Error sending message: ${e.message}`);
-      return false;
-    }
-  };
-
-  const registerAsset = async () => {
-    if (assetMode === 'image' && !imageAsset) {
-      addLog('No image asset to broadcast');
-      return;
-    }
-    if (assetMode === 'text' && !assetText) {
-      addLog('No text asset to broadcast');
-      return;
-    }
-
-    setIsBroadcasting(true);
-    addLog('Starting asset broadcast...');
-    if (clients.length === 0) {
-      addLog('No clients connected. Asset registered locally.');
-      // Save to cache
-      await dbPut('assets', 'latest-asset', assetMode === 'text' ? compressedAssetText : imageAsset);
-
-      await dbPut('assets', 'latest-asset-mode', assetMode);
-      setIsBroadcasting(false);
-      return;
-    }
-
-    // Save to cache
-    await dbPut('assets', 'latest-asset', assetMode === 'text' ? compressedAssetText : imageAsset);
-    await dbPut('assets', 'latest-asset-mode', assetMode);
-
-    addLog('Asset saved to cache');
-
-    addLog(`Broadcasting asset to ${clients.length} clients...`);
-
-    const failedEndpoints: string[] = [];
-
-    for (const client of clients) {
-      const success = await sendMessage(client, {
-        type: 'ASSET',
-        asset: assetMode === 'text' ? compressedAssetText : imageAsset,
-        assetMode: assetMode,
-      });
-
-      if (!success && client.subscription.endpoint) {
-        failedEndpoints.push(client.subscription.endpoint);
-      }
-    }
-
-    if (failedEndpoints.length > 0) {
-      setClients((prev) =>
-        prev.filter((c) => c.subscription.endpoint && !failedEndpoints.includes(c.subscription.endpoint)),
-      );
-
-      // Remove from cache
-      for (const endpoint of failedEndpoints) {
-        await dbDelete('clients', endpoint);
-      }
-
-      addLog(`Removed ${failedEndpoints.length} unreachable clients.`);
-    }
-
-    addLog('Broadcast complete');
-    setIsBroadcasting(false);
-  };
-
-  const getShareLink = () => {
-    if (!subscription || !vapidKeys) return '';
-    const config: RemoteConfig = { subscription: subscription.toJSON(), vapidKeys };
-    const str = btoa(JSON.stringify(config));
-    // Point to the receive route
-    return `${window.location.origin}/receive?connect=${encodeURIComponent(str)}`;
-  };
+  const shareLink =
+    subscription && vapidKeys
+      ? `${window.location.origin}/receive?connect=${encodeURIComponent(
+          btoa(JSON.stringify({ subscription, vapidKeys })),
+        )}`
+      : '';
 
   const handleReset = async () => {
-    if (subscription) await subscription.unsubscribe();
-    localStorage.removeItem('baab_vapid_keys');
-    localStorage.removeItem('baab_mode');
-
-    // Clear caches
-    await dbClear('config');
-    await dbClear('clients');
-    await dbClear('assets');
-
-    setVapidKeys(null);
-    setSubscription(null);
-    setIsServerStarted(false);
-    setClients([]);
-    setLogs([]);
+    await resetServer();
   };
 
   if (isServerStarted) {
     return (
-      <main className="p-2 flex flex-col gap-4 mb-20">
+      <main className="p-2 flex flex-col gap-4 mb-20 max-w-3xl">
         <SessionInfo />
         <div className="flex justify-between items-center">
           <h2 className="text-xl font-bold">Share</h2>
           <button onClick={handleReset} className="text-red-500 text-sm underline">
-            Close Server
+            Stop Sharing
           </button>
         </div>
 
-        <div className="flex flex-col gap-10 max-w-md">
-          <div className="flex flex-col gap-1">
-            <label htmlFor="serverUrl">
-              <span className=" font-bold">Share this link</span>
-              <p className=" text-sm block">To get started, Share this link with people you want to receive assets:</p>
-            </label>
-            <textarea
-              id="serverUrl"
-              name="serverUrl"
-              readOnly
-              value={getShareLink()}
-              className="w-full border px-2 py-1 rounded text-xs resize-none"
-              onClick={(e) => e.currentTarget.select()}
-              rows={3}
-            />
-            <div className="mt-2">
-              <span className="text-sm block">Or scan this QR code (click to enlarge):</span>
-              <div
-                className={`mt-1 p-2 border ${enlargeQr ? 'w-full' : 'w-48'} rounded cursor-pointer`}
-                onClick={() => setEnlargeQr(!enlargeQr)}
-              >
-                <QRCode value={getShareLink()} />
+        <div className="flex flex-col gap-2">
+          <h3 className="font-bold">Connected Clients: {clients.length}</h3>
+          <div className="text-xs text-gray-500">
+            {clients.map((c, i) => (
+              <div key={i} className="truncate">
+                {c.subscription.endpoint}
               </div>
-            </div>
-            <div>
-              <p className=" block">Note: Only share this link with people you trust.</p>
-            </div>
+            ))}
           </div>
+        </div>
 
-          <div className="flex gap-2">
-            <button
-              onClick={() => setAssetMode('text')}
-              className={`px-4 py-2 rounded block w-fit ${
-                assetMode === 'text' ? 'bg-blue-500 text-white' : 'bg-gray-200'
-              }`}
-            >
-              Text Asset
-            </button>
-            <button
-              onClick={() => setAssetMode('image')}
-              className={`px-4 py-2 rounded block w-fit ${
-                assetMode === 'image' ? 'bg-blue-500 text-white' : 'bg-gray-200'
-              }`}
-            >
-              Image Asset
-            </button>
+        <div className="flex flex-col gap-2 border-t pt-4">
+          <h3 className="font-bold">Broadcast Asset</h3>
+          <div className="flex gap-4 mb-2">
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="assetMode"
+                value="text"
+                checked={assetMode === 'text'}
+                onChange={() => setAssetMode('text')}
+              />
+              Text
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="assetMode"
+                value="image"
+                checked={assetMode === 'image'}
+                onChange={() => setAssetMode('image')}
+              />
+              Image
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name="assetMode"
+                value="directory"
+                checked={assetMode === 'directory'}
+                onChange={() => setAssetMode('directory')}
+              />
+              Folder
+            </label>
           </div>
 
           {assetMode === 'text' ? (
-            <div className="flex flex-col gap-2">
-              <label htmlFor="assetText">
-                <span className=" font-bold">Asset to Share</span>
-                <p className=" text-sm block">Enter the text you want to share with connected clients.</p>
-              </label>
-              <textarea
-                id="assetText"
-                name="assetText"
-                readOnly={isBroadcasting}
-                value={assetText}
-                onChange={(e) => setAssetText(e.target.value)}
-                placeholder="Enter text to share..."
-                rows={5}
-                className="w-full border px-2 py-1 rounded text-sm read-only:opacity-50"
-              />
-              <p>
-                You have used {Math.max(0, 100 - (new Blob([compressedAssetText]).size / 4078) * 100).toFixed(2)}% of
-                4KB limit. The size is {new Blob([compressedAssetText]).size} bytes.
-              </p>
-              <button
-                onClick={registerAsset}
-                disabled={!assetText || isBroadcasting}
-                className="bg-blue-500 text-white px-4 py-2 rounded block w-full disabled:opacity-50"
-              >
-                {clients.length === 0 ? `Register asset` : `Broadcast to ${clients.length} Clients`}
-              </button>
-            </div>
+            <textarea
+              value={assetText}
+              onChange={(e) => setAssetText(e.target.value)}
+              className="w-full border px-2 py-1 rounded text-sm"
+              rows={5}
+              placeholder="Enter text to share..."
+            />
+          ) : assetMode === 'image' ? (
+            <ImageForm setImageAsset={setImageAsset} />
           ) : (
-            <>
-              <ImageForm setImageAsset={setImageAsset} />
+            <DirectoryForm setDirectoryAsset={setDirectoryAsset} />
+          )}
 
-              {imageAsset && (
-                <>
-                  <p>
-                    You have used {Math.max(0, ((imageAsset.length * 2) / 4096) * 100).toFixed(2)}% of 4KB limit. The
-                    size is {imageAsset.length * 2} bytes.
-                  </p>
+          <button
+            onClick={registerAsset}
+            disabled={isBroadcasting}
+            className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
+          >
+            {isBroadcasting ? 'Broadcasting...' : 'Update & Broadcast'}
+          </button>
+
+          <div className="text-xs text-gray-600" aria-live="polite">
+            {lastBroadcastBytes && lastBroadcastMs && (
+              <span>
+                Speed meter: last broadcast {formatBytes(lastBroadcastBytes)} in {lastBroadcastMs.toFixed(0)} ms (~
+                {humanBps((lastBroadcastBytes / lastBroadcastMs) * 1000)}).
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 border-t pt-4">
+          <h3 className="font-bold">Delivery Tuning</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-semibold">Chunk concurrency</span>
+              <input
+                type="number"
+                min={1}
+                max={5}
+                value={chunkConcurrency}
+                onChange={(e) => updateChunkConcurrency(Number(e.target.value) || 1)}
+                className="border rounded px-2 py-1 text-sm"
+              />
+            </label>
+
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-semibold">Jitter per chunk (ms)</span>
+              <input
+                type="number"
+                min={0}
+                max={500}
+                value={chunkJitterMs}
+                onChange={(e) => updateChunkJitterMs(Number(e.target.value) || 0)}
+                className="border rounded px-2 py-1 text-sm"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2 border-t pt-4">
+          <h3 className="font-bold">Connection Info</h3>
+          <p className="text-sm">Share this QR code or link with the receiver.</p>
+          {shareLink && (
+            <div className="flex flex-col items-center gap-4 w-full">
+              <div
+                onClick={() => setEnlargeQr(!enlargeQr)}
+                className="cursor-pointer"
+                style={{ width: enlargeQr ? 300 : 150, height: enlargeQr ? 300 : 150 }}
+              >
+                <QRCode value={shareLink} />
+              </div>
+              <p className="text-xs text-gray-500 text-center">Click QR code to {enlargeQr ? 'shrink' : 'enlarge'}</p>
+
+              <div className="flex flex-col gap-1 w-full max-w-md">
+                <label className="text-xs font-bold">Share Link</label>
+                <div className="flex gap-2">
+                  <input
+                    readOnly
+                    value={shareLink}
+                    className="border px-2 py-1 rounded text-xs flex-1 truncate bg-gray-50"
+                    onClick={(e) => e.currentTarget.select()}
+                  />
                   <button
-                    onClick={registerAsset}
-                    disabled={!imageAsset || isBroadcasting}
-                    className="bg-blue-500 text-white px-4 py-2 rounded block w-full disabled:opacity-50"
+                    onClick={() => {
+                      navigator.clipboard.writeText(shareLink);
+                      alert('Copied!');
+                    }}
+                    className="bg-blue-500 text-white px-3 py-1 rounded text-xs whitespace-nowrap cursor-pointer"
                   >
-                    {clients.length === 0 ? `Register asset` : `Broadcast to ${clients.length} Clients`}
+                    Copy
                   </button>
-                </>
-              )}
-            </>
+                </div>
+              </div>
+            </div>
           )}
         </div>
 
@@ -568,40 +256,20 @@ function RouteComponent() {
             <div key={i}>{log}</div>
           ))}
         </div>
-
-        <div className="flex flex-col gap-2">
-          <h3 className="font-bold">Connected Clients ({clients.length})</h3>
-          {clients.length === 0 ? (
-            <p className="text-sm text-gray-500">No clients connected yet.</p>
-          ) : (
-            <ul className="list-disc list-inside text-sm">
-              {clients.map((c, i) => (
-                <li key={i} className="truncate">
-                  Client {i + 1} ({c.subscription.endpoint?.slice(0, 20)}...)
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
       </main>
     );
   }
 
   return (
-    <main className=" p-2 flex flex-col gap-4 mb-20">
+    <main className="p-2 flex flex-col gap-4 mb-20 max-w-3xl">
       <h2 className="text-xl font-bold">Share</h2>
       <HowToUse />
-
-      <div className="flex flex-col gap-4 mt-4">
-        <p>Start a server to begin sharing files with others.</p>
-        <button
-          onClick={startServer}
-          className="bg-blue-500 text-white px-4 py-2 rounded block w-fit disabled:opacity-50"
-        >
+      <div className="flex flex-col gap-4">
+        <p>Click the button below to start a sharing session. You will get a link/QR code to share with others.</p>
+        <button onClick={startServer} className="bg-blue-500 text-white px-4 py-2 rounded w-fit">
           Start Sharing
         </button>
       </div>
-
       <div className="logs mt-4 p-2 bg-gray-100 rounded text-xs font-mono h-40 overflow-y-auto">
         {logs.map((log, i) => (
           <div key={i}>{log}</div>
