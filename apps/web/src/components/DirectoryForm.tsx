@@ -105,7 +105,7 @@ export function DirectoryForm({ setDirectoryAsset }: { setDirectoryAsset: (asset
       )}
 
       {manifest.length > 0 && (
-        <div className="bg-white border rounded-lg p-3 shadow-sm text-xs text-gray-700 flex flex-col gap-2">
+        <div className="bg-white border rounded-lg p-3 text-xs text-gray-700 flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <div className="font-semibold">{directoryName}</div>
             <div className="text-gray-500">

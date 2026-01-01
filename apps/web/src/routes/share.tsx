@@ -9,14 +9,6 @@ import { SessionInfo } from '../components/SessionInfo';
 import { useBaab } from '../hooks/useBaab';
 import { useBaabServer } from '../hooks/useBaabServer';
 
-const formatBytes = (bytes: number) => {
-  if (!bytes || bytes < 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / Math.pow(1024, idx);
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[idx]}`;
-};
-
 const humanBps = (bps: number) => {
   if (!bps || bps < 0) return '0 B/s';
   const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
@@ -55,7 +47,6 @@ function RouteComponent() {
   const {
     isServerStarted,
     isBroadcasting,
-    clients,
     assetMode,
     setAssetMode,
     assetText,
@@ -82,6 +73,7 @@ function RouteComponent() {
   });
 
   const [enlargeQr, setEnlargeQr] = useState(false);
+  const [isStartingServer, setIsStartingServer] = useState(false);
 
   const shareLink =
     subscription && vapidKeys
@@ -105,15 +97,44 @@ function RouteComponent() {
           </button>
         </div>
 
-        <div className="flex flex-col gap-2">
-          <h3 className="font-bold">Connected Clients: {clients.length}</h3>
-          <div className="text-xs text-gray-500">
-            {clients.map((c, i) => (
-              <div key={i} className="truncate">
-                {c.subscription.endpoint}
+        <div className="flex flex-col gap-2 pt-4">
+          <h3 className="font-bold">Connection Info</h3>
+          <p className="text-sm">Share the link or QR code to allow others to connect.</p>
+          {shareLink && (
+            <div className="flex flex-row gap-4 w-full flex-wrap">
+              <div>
+                <div
+                  onClick={() => setEnlargeQr(!enlargeQr)}
+                  className="cursor-pointer"
+                  style={{ width: enlargeQr ? 300 : 150, height: enlargeQr ? 300 : 150 }}
+                >
+                  <QRCode value={shareLink} />
+                </div>
+                <p className="text-xs text-gray-500">Click QR code to {enlargeQr ? 'shrink' : 'enlarge'}</p>
               </div>
-            ))}
-          </div>
+
+              <div className="flex flex-col gap-1 w-full max-w-md">
+                <label className="text-xs font-bold">Share Link</label>
+                <div className="flex gap-2">
+                  <input
+                    readOnly
+                    value={shareLink}
+                    className="border p-3 rounded text-xs flex-1 truncate"
+                    onClick={(e) => e.currentTarget.select()}
+                  />
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(shareLink);
+                      alert('Copied!');
+                    }}
+                    className="bg-blue-500 text-white px-3 py-1 rounded text-xs whitespace-nowrap cursor-pointer"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-2 border-t pt-4">
@@ -168,22 +189,19 @@ function RouteComponent() {
           <button
             onClick={registerAsset}
             disabled={isBroadcasting}
-            className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
+            className="bg-blue-500 text-white px-4 py-2 rounded disabled:opacity-50"
           >
             {isBroadcasting ? 'Broadcasting...' : 'Update & Broadcast'}
           </button>
 
           <div className="text-xs text-gray-600" aria-live="polite">
             {lastBroadcastBytes && lastBroadcastMs && (
-              <span>
-                Speed meter: last broadcast {formatBytes(lastBroadcastBytes)} in {lastBroadcastMs.toFixed(0)} ms (~
-                {humanBps((lastBroadcastBytes / lastBroadcastMs) * 1000)}).
-              </span>
+              <span>{humanBps((lastBroadcastBytes / lastBroadcastMs) * 1000)}</span>
             )}
           </div>
         </div>
 
-        <div className="flex flex-col gap-3 border-t pt-4">
+        <div className="flex flex-col gap-3">
           <h3 className="font-bold">Delivery Tuning</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex flex-col gap-1 text-sm">
@@ -212,44 +230,6 @@ function RouteComponent() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 border-t pt-4">
-          <h3 className="font-bold">Connection Info</h3>
-          <p className="text-sm">Share this QR code or link with the receiver.</p>
-          {shareLink && (
-            <div className="flex flex-col items-center gap-4 w-full">
-              <div
-                onClick={() => setEnlargeQr(!enlargeQr)}
-                className="cursor-pointer"
-                style={{ width: enlargeQr ? 300 : 150, height: enlargeQr ? 300 : 150 }}
-              >
-                <QRCode value={shareLink} />
-              </div>
-              <p className="text-xs text-gray-500 text-center">Click QR code to {enlargeQr ? 'shrink' : 'enlarge'}</p>
-
-              <div className="flex flex-col gap-1 w-full max-w-md">
-                <label className="text-xs font-bold">Share Link</label>
-                <div className="flex gap-2">
-                  <input
-                    readOnly
-                    value={shareLink}
-                    className="border px-2 py-1 rounded text-xs flex-1 truncate bg-gray-50"
-                    onClick={(e) => e.currentTarget.select()}
-                  />
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(shareLink);
-                      alert('Copied!');
-                    }}
-                    className="bg-blue-500 text-white px-3 py-1 rounded text-xs whitespace-nowrap cursor-pointer"
-                  >
-                    Copy
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
         <div className="logs mt-4 p-2 bg-gray-100 rounded text-xs font-mono h-40 overflow-y-auto">
           {logs.map((log, i) => (
             <div key={i}>{log}</div>
@@ -264,8 +244,16 @@ function RouteComponent() {
       <h2 className="text-xl font-bold">Share</h2>
       <HowToUse />
       <div className="flex flex-col gap-4">
-        <p>Click the button below to start a sharing session. You will get a link/QR code to share with others.</p>
-        <button onClick={startServer} className="bg-blue-500 text-white px-4 py-2 rounded w-fit">
+        <p>Click "Start Sharing". You will get a link/QR code to share with others.</p>
+        <button
+          onClick={async () => {
+            setIsStartingServer(true);
+            await startServer();
+            setIsStartingServer(false);
+          }}
+          className="bg-blue-500 text-white px-4 py-2 rounded w-fit disabled:opacity-50"
+          disabled={isStartingServer}
+        >
           Start Sharing
         </button>
       </div>

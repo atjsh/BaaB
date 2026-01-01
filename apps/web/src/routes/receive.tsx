@@ -124,14 +124,6 @@ function Receive() {
         </div>
         <div className="flex flex-col gap-2">
           <h3 className="font-bold">Received Assets</h3>
-          <div className="text-xs text-gray-600" aria-live="polite">
-            {lastReceiveBytes && lastReceiveMs && (
-              <span>
-                Speed meter: last receive {formatBytes(lastReceiveBytes)} in {lastReceiveMs.toFixed(0)} ms (~
-                {humanBps((lastReceiveBytes / lastReceiveMs) * 1000)}).
-              </span>
-            )}
-          </div>
           {receivedAssets.length === 0 ? (
             <p>No assets received yet. Waiting for server...</p>
           ) : (
@@ -147,7 +139,7 @@ function Receive() {
                   const remaining = manifest.length - listed.length;
 
                   return (
-                    <div key={i} className="border p-4 rounded bg-white shadow-sm flex flex-col gap-3">
+                    <div key={i} className="border p-4 rounded bg-white flex flex-col gap-3">
                       <div className="flex justify-between items-center">
                         <div className="font-semibold">{asset.directoryName || 'Shared folder'}</div>
                         <div className="text-xs text-gray-500">
@@ -196,7 +188,7 @@ function Receive() {
                 return asset.type === 'text' ? (
                   <div
                     key={i}
-                    className="border p-4 rounded bg-white shadow-sm whitespace-pre-wrap break-all flex flex-col gap-2"
+                    className="border p-4 rounded bg-white whitespace-pre-wrap break-all flex flex-col gap-2"
                   >
                     <div>{previewText}</div>
                     <div className="flex justify-end">
@@ -206,7 +198,7 @@ function Receive() {
                     </div>
                   </div>
                 ) : (
-                  <div key={i} className="border p-4 rounded bg-white shadow-sm flex flex-col gap-2">
+                  <div key={i} className="border p-4 rounded bg-white flex flex-col gap-2">
                     <img src={asset.content} alt={`Received asset ${i + 1}`} className="max-w-full h-auto" />
                     <div className="flex justify-end">
                       <a href={href} download={downloadName} className="text-xs text-blue-600 underline">
@@ -223,6 +215,9 @@ function Receive() {
           {logs.map((log, i) => (
             <div key={i}>{log}</div>
           ))}
+        </div>
+        <div className="text-xs text-gray-600" aria-live="polite">
+          {lastReceiveBytes && lastReceiveMs && <span>{humanBps((lastReceiveBytes / lastReceiveMs) * 1000)}</span>}
         </div>
       </main>
     );
@@ -249,7 +244,7 @@ function Receive() {
             id="serverUrl"
             name="serverUrl"
             required
-            placeholder="https://baab.atj.sh/receive/?connect=eyJ..."
+            placeholder={`https://${window.location.host}/receive/?connect=eyJ...`}
             className="w-full border px-2 py-1 rounded text-xs resize-none"
             rows={20}
           />

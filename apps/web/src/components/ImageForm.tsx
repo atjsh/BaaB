@@ -68,7 +68,7 @@ export const ImageForm: React.FC<Props> = ({ setImageAsset }) => {
       </label>
 
       {imageDraft && (
-        <div className="flex gap-4 items-start bg-white border rounded-lg p-3 shadow-sm">
+        <div className="flex gap-4 items-start bg-white border rounded-lg p-3 ">
           <img src={imageDraft} alt="Thumbnail Preview" className="w-32 h-32 object-contain rounded" />
           <div className="text-xs text-gray-700 flex flex-col gap-1">
             {fileName && <div className="font-semibold">{fileName}</div>}
