@@ -26,9 +26,9 @@ function Index() {
           enable direct browser-to-browser communication.
         </p>
         <p>
-          You can securely share text to someone else. We relay data directly to the recipient's browser with browser
-          notifications. The data are end-to-end encrypted, ensuring that only the intended recipient can access them.
-          Even the relay server cannot decrypt the data.
+          We relay data directly to the recipient's browser with browser notifications. The data are end-to-end
+          encrypted, ensuring that only the intended recipient can access them. Even the relay server cannot decrypt the
+          data.
         </p>
         <p>
           To get started, choose to either{' '}
