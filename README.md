@@ -18,6 +18,39 @@ Browser as a Backend; Make your device's web browser as a HTTP backend server
 
 # How it works
 
+```mermaid
+sequenceDiagram
+    participant Other Private Channel
+    participant Alice
+    participant Charlie
+    participant PushProxy@{ "type" : "queue" }
+
+    Alice->>Alice: Prepares assets to distribute, saves into Alice's Web Storage
+    note over Alice: assets: ["Hello world!"]
+    Alice->>Alice: Creates Alice's VAPID keys & Subscribe Alice's Notification
+
+    Alice-->>Other Private Channel: Shares Alice's credentials
+    Other Private Channel-->>Charlie: Receives Alice's credentials
+    note over Other Private Channel, Charlie: Alice's VAPID keys + Alice's Web Push API endpoint
+
+    Charlie->>Charlie: Creates Charlie's VAPID keys & Subscribe Charlie's Notification
+    Charlie->>PushProxy: Sends handshake with Charlie's credentials to Alice's Web Push API endpoint
+    Note over Charlie, PushProxy: Charlie's VAPID keys + Charlie's Web Push API endpoint
+    PushProxy->>Alice: Sends handshake from Charlie
+    Alice->>Alice: Save Charlie's VAPID keys + Charlie's Web Push API endpoint into Web Storage
+    Alice->>PushProxy: Sends ACK with Alice's assets to Charlie's Web Push API endpoint
+    PushProxy->>Charlie: Sends ACK from Alice
+    Charlie->>Charlie: Save Alice's assets
+    note over Charlie: assets: ["Hello world!"]
+
+    Alice->>Alice: Update assets
+    note over Alice: assets: ["2026!"]
+    Alice->>PushProxy: Sends AssetUpdate event with Alice's assets to Charlie's Web Push API endpoint
+    PushProxy->>Charlie: Sends AssetUpdate event from Alice
+    Charlie->>Charlie: Save Alice's assets
+    note over Charlie: assets: ["2026!"]
+```
+
 Let's say: Alice is a server, Charlie is a client.
 
 1. Alice opens a baab worker in their web browser. They create their own VAPID keys and subscribe to push notifications.
