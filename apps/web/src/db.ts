@@ -1,6 +1,6 @@
 const DB_NAME = 'baab-db';
-const DB_VERSION = 1;
-const STORES = ['config', 'clients', 'assets'] as const;
+const DB_VERSION = 2;
+const STORES = ['config', 'clients', 'assets', 'chunks'] as const;
 type StoreName = (typeof STORES)[number];
 
 function openDB(): Promise<IDBDatabase> {

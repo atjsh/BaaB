@@ -219,7 +219,7 @@ export async function encryptPayload(
   // Ensure that the ciphertext length doesn't exceed the record size
   if (ciphertext.byteLength > 4096 - 16) {
     // 16 is for auth tag
-    throw new Error('Payload too large for single record');
+    throw new Error(`Payload too large for single record; size: ${ciphertext.byteLength} bytes`);
   }
   const encryptedPayload = concat(header, new Uint8Array(ciphertext));
   return {
@@ -277,6 +277,7 @@ export interface EncryptWebPushOptions {
   };
   vapidKeyPair: CryptoKeyPair;
   payload: string;
+  proxyUrl: string;
   ttl?: number;
   urgency?: 'very-low' | 'low' | 'normal' | 'high';
 }
@@ -285,10 +286,7 @@ export async function encryptWebPush(options: EncryptWebPushOptions) {
   const { subscription, vapidKeyPair, payload } = options;
   const encryptionOptions = { algorithm: 'aes128gcm', ttl: options.ttl, urgency: options.urgency };
 
-  // Use a dummy email for JWT since we are proxying.
-  const emailAddress = 'dummy@example.com';
-
-  const jwt = await createJWT(vapidKeyPair.privateKey, new URL(subscription.endpoint), emailAddress);
+  const jwt = await createJWT(vapidKeyPair.privateKey, new URL(subscription.endpoint), options.proxyUrl);
   const { encrypted, salt, appServerPublicKey } = await encryptPayload(payload, subscription.keys, encryptionOptions);
 
   const headers = await generateHeaders(vapidKeyPair.publicKey, jwt, encrypted, {

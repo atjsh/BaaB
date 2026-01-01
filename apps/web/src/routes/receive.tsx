@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { useCallback, useEffect, useState } from 'react';
 import { deserializeVapidKeys, fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
+import { decompress } from 'lz-string';
 
 import { dbClear, dbGet, dbPut } from '../db';
 import { arrayBufferToBase64Url, encryptWebPush } from '../web-push-encryption';
@@ -13,9 +14,18 @@ const PROXY_URL = import.meta.env.VITE_PROXY_URL;
 type VapidKeys = { publicKey: string; privateKey: string };
 type RemoteConfig = { subscription: PushSubscriptionJSON; vapidKeys: VapidKeys };
 type MessagePayload = {
-  type: 'HANDSHAKE' | 'ASSET' | 'ACK';
+  type: 'HANDSHAKE' | 'ASSET' | 'ACK' | 'CHUNK';
   senderConfig?: RemoteConfig;
   asset?: string;
+  assetMode?: 'text' | 'image';
+  id?: string;
+  index?: number;
+  total?: number;
+  data?: string;
+};
+
+type ReceiveRouteSearch = {
+  connect?: string;
 };
 
 export const Route = createFileRoute('/receive')({
@@ -31,13 +41,22 @@ export const Route = createFileRoute('/receive')({
       },
     ],
   }),
+  validateSearch: (search): ReceiveRouteSearch => ({
+    connect: 'connect' in search ? String(search.connect) : undefined,
+  }),
 });
 
 function Receive() {
+  const search = Route.useSearch();
   const [vapidKeys, setVapidKeys] = useState<VapidKeys | null>(null);
   const [subscription, setSubscription] = useState<PushSubscription | null>(null);
   const [serverConfig, setServerConfig] = useState<RemoteConfig | null>(null);
-  const [receivedAssets, setReceivedAssets] = useState<string[]>([]);
+  const [receivedAssets, setReceivedAssets] = useState<
+    {
+      type: 'text' | 'image';
+      content: string;
+    }[]
+  >([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connecting' | 'connected'>('idle');
 
@@ -80,11 +99,8 @@ function Receive() {
         }
       }
 
-      // Check for connect param in URL
-      const params = new URLSearchParams(window.location.search);
-      const connectData = params.get('connect');
-      if (connectData) {
-        handleConnectData(connectData);
+      if (search.connect) {
+        handleConnectData(search.connect);
       } else {
         const storedConfig = await dbGet('config', 'server-config');
         if (storedConfig) {
@@ -126,38 +142,64 @@ function Receive() {
 
   const sendMessage = async (targetConfig: RemoteConfig, payload: MessagePayload) => {
     try {
-      const sub = targetConfig.subscription;
-      if (!sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
-        throw new Error('Invalid subscription data');
-      }
-
       const vapidKeyPair = await deserializeVapidKeys(targetConfig.vapidKeys);
-      const encrypted = await encryptWebPush({
-        subscription: {
-          endpoint: sub.endpoint,
-          keys: {
-            p256dh: sub.keys.p256dh,
-            auth: sub.keys.auth,
+
+      const send = async (p: MessagePayload) => {
+        const sub = targetConfig.subscription;
+        if (!sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
+          throw new Error('Invalid subscription data');
+        }
+
+        const encrypted = await encryptWebPush({
+          subscription: {
+            endpoint: sub.endpoint,
+            keys: {
+              p256dh: sub.keys.p256dh,
+              auth: sub.keys.auth,
+            },
           },
-        },
-        vapidKeyPair,
-        payload: JSON.stringify(payload),
-      });
+          vapidKeyPair,
+          payload: JSON.stringify(p),
+          proxyUrl: PROXY_URL,
+        });
 
-      const response = await fetch(PROXY_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          endpoint: encrypted.endpoint,
-          body: arrayBufferToBase64Url(encrypted.body),
-          headers: encrypted.headers,
-        }),
-      });
+        const response = await fetch(PROXY_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            endpoint: encrypted.endpoint,
+            body: arrayBufferToBase64Url(encrypted.body),
+            headers: encrypted.headers,
+          }),
+        });
 
-      if (!response.ok) {
-        throw new Error(await response.text());
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        return true;
+      };
+
+      const payloadStr = JSON.stringify(payload);
+      const MAX_CHUNK_SIZE = 2048;
+
+      if (payloadStr.length <= MAX_CHUNK_SIZE) {
+        return await send(payload);
+      } else {
+        const id = crypto.randomUUID();
+        const total = Math.ceil(payloadStr.length / MAX_CHUNK_SIZE);
+        for (let i = 0; i < total; i++) {
+          const chunkData = payloadStr.slice(i * MAX_CHUNK_SIZE, (i + 1) * MAX_CHUNK_SIZE);
+          const chunkPayload: MessagePayload = {
+            type: 'CHUNK',
+            id,
+            index: i,
+            total,
+            data: chunkData,
+          };
+          await send(chunkPayload);
+        }
+        return true;
       }
-      return true;
     } catch (e: any) {
       addLog(`Error sending message: ${e.message}`);
       return false;
@@ -209,15 +251,25 @@ function Receive() {
         return;
       }
 
-      if (data.type === 'ASSET' && data.asset) {
+      const { asset } = data;
+
+      if (data.type === 'ASSET' && asset !== undefined) {
         addLog('Received ASSET');
-        setReceivedAssets((prev) => [data.asset!, ...prev]);
+        setReceivedAssets((prev) => [
+          { type: data.assetMode || 'text', content: data.assetMode === 'text' ? decompress(asset) : asset },
+          ...prev,
+        ]);
       } else if (data.type === 'ACK') {
         addLog('Received ACK');
-        if (data.asset) {
+        if (asset) {
           addLog('Received ASSET with ACK');
-          setReceivedAssets((prev) => [data.asset!, ...prev]);
+          setReceivedAssets((prev) => [
+            { type: data.assetMode || 'text', content: data.assetMode === 'text' ? decompress(asset) : asset },
+            ...prev,
+          ]);
         }
+      } else if (data.type === 'CHUNK') {
+        addLog(`Received CHUNK ${data.index! + 1}/${data.total}`);
       }
     },
     [addLog],
@@ -290,13 +342,17 @@ function Receive() {
             <p>No assets received yet. Waiting for server...</p>
           ) : (
             <div className="flex flex-col gap-2">
-              {receivedAssets.map((asset, i) => (
-                <div
-                  key={i}
-                  className="border p-4 rounded bg-white shadow-sm"
-                  dangerouslySetInnerHTML={{ __html: asset }}
-                />
-              ))}
+              {receivedAssets.map((asset, i) =>
+                asset.type === 'text' ? (
+                  <div key={i} className="border p-4 rounded bg-white shadow-sm whitespace-pre-wrap break-all">
+                    {asset.content}
+                  </div>
+                ) : (
+                  <div key={i} className="border p-4 rounded bg-white shadow-sm">
+                    <img src={asset.content} alt={`Received asset ${i + 1}`} className="max-w-full h-auto" />
+                  </div>
+                ),
+              )}
             </div>
           )}
         </div>

@@ -1,7 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router';
+import { compress, decompress } from 'lz-string';
 import encodeQR from 'qr';
 import { useCallback, useEffect, useState } from 'react';
 import { deserializeVapidKeys, fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
+import { blobToWebP } from 'webp-converter-browser';
 
 import { dbClear, dbDelete, dbGet, dbGetAll, dbPut } from '../db';
 import { arrayBufferToBase64Url, encryptWebPush } from '../web-push-encryption';
@@ -14,9 +16,14 @@ const PROXY_URL = import.meta.env.VITE_PROXY_URL;
 type VapidKeys = { publicKey: string; privateKey: string };
 type RemoteConfig = { subscription: PushSubscriptionJSON; vapidKeys: VapidKeys };
 type MessagePayload = {
-  type: 'HANDSHAKE' | 'ASSET' | 'ACK';
+  type: 'HANDSHAKE' | 'ASSET' | 'ACK' | 'CHUNK';
   senderConfig?: RemoteConfig;
   asset?: string;
+  assetMode?: 'text' | 'image';
+  id?: string;
+  index?: number;
+  total?: number;
+  data?: string;
 };
 
 export const Route = createFileRoute('/share')({
@@ -50,6 +57,64 @@ const QRCode = ({ value }: { value: string }) => {
   return <img src={dataUrl} alt="QR Code" className=" w-full h-full" />;
 };
 
+const ImageForm: React.FC<{ setImageAsset: (dataUrl: string) => void }> = ({ setImageAsset }) => {
+  const [imageDraft, setImageDraft] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (imageDraft) {
+      setImageAsset(imageDraft);
+    }
+  }, [imageDraft, setImageAsset]);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const originalDim = await new Promise<{ width: number; height: number }>((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          resolve({ width: img.width, height: img.height });
+        };
+        img.src = URL.createObjectURL(file);
+      });
+
+      const maxWidth = 1000;
+      const maxHeight = 1000;
+      let targetWidth = originalDim.width;
+      let targetHeight = originalDim.height;
+
+      if (originalDim.width > maxWidth || originalDim.height > maxHeight) {
+        const widthRatio = maxWidth / originalDim.width;
+        const heightRatio = maxHeight / originalDim.height;
+        const minRatio = Math.min(widthRatio, heightRatio);
+        targetWidth = Math.floor(originalDim.width * minRatio);
+        targetHeight = Math.floor(originalDim.height * minRatio);
+      }
+
+      const webpBlob = await blobToWebP(file, { quality: 0.5, width: targetWidth, height: targetHeight });
+      // Convert to base32768
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImageDraft(reader.result as string);
+      };
+      reader.readAsDataURL(webpBlob);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <label htmlFor="imageUpload" className="font-bold">
+        Upload Image
+      </label>
+      <input type="file" id="imageUpload" accept="image/*" onChange={handleFileChange} />
+      {imageDraft && (
+        <div className="mt-2">
+          <img src={imageDraft} alt="Thumbnail Preview" className="max-w-xs" />
+        </div>
+      )}
+    </div>
+  );
+};
+
 function RouteComponent() {
   const [vapidKeys, setVapidKeys] = useState<VapidKeys | null>(null);
   const [subscription, setSubscription] = useState<PushSubscription | null>(null);
@@ -60,9 +125,12 @@ function RouteComponent() {
 
   // Server State
   const [clients, setClients] = useState<RemoteConfig[]>([]);
-  const [assetText, setAssetText] = useState(
-    () => localStorage.getItem('baab_asset_draft') || 'This is a secret message!',
-  );
+  const [assetMode, setAssetMode] = useState<'text' | 'image'>('text');
+  const [assetText, setAssetText] = useState('');
+  const [compressedAssetText, setCompressedAssetText] = useState('');
+  const [imageAsset, setImageAsset] = useState<string>('');
+
+  console.log({ imageAsset });
 
   const addLog = useCallback((msg: string) => {
     setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
@@ -71,17 +139,29 @@ function RouteComponent() {
   // Load current asset from cache on mount
   useEffect(() => {
     if (!assetText) {
-      dbGet('assets', 'latest-asset').then((text) => {
-        if (text) {
-          setAssetText((prev) => prev || text);
+      dbGet('assets', 'latest-asset-mode').then((mode) => {
+        setAssetMode(mode === 'image' ? 'image' : 'text');
+        if (mode === 'image') {
+          dbGet('assets', 'latest-asset').then((data) => {
+            if (data) {
+              setImageAsset(data);
+            }
+          });
+        } else {
+          dbGet('assets', 'latest-asset').then((text) => {
+            if (text) {
+              setAssetText((prev) => prev || decompress(text));
+            } else {
+              setAssetText('This is a secret message!');
+            }
+          });
         }
       });
     }
   }, []);
 
-  // Save asset draft to localStorage
   useEffect(() => {
-    localStorage.setItem('baab_asset_draft', assetText);
+    setCompressedAssetText(compress(assetText));
   }, [assetText]);
 
   // Load clients from cache when server is started
@@ -168,6 +248,8 @@ function RouteComponent() {
           });
           addLog('New client connected!');
         }
+      } else if (data.type === 'CHUNK') {
+        addLog(`Received CHUNK ${data.index! + 1}/${data.total}`);
       }
     },
     [isServerStarted, addLog],
@@ -222,38 +304,63 @@ function RouteComponent() {
 
   const sendMessage = async (targetConfig: RemoteConfig, payload: MessagePayload) => {
     try {
-      const sub = targetConfig.subscription;
-      if (!sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
-        throw new Error('Invalid subscription data');
-      }
-
       const vapidKeyPair = await deserializeVapidKeys(targetConfig.vapidKeys);
-      const encrypted = await encryptWebPush({
-        subscription: {
-          endpoint: sub.endpoint,
-          keys: {
-            p256dh: sub.keys.p256dh,
-            auth: sub.keys.auth,
+
+      const send = async (p: MessagePayload) => {
+        const sub = targetConfig.subscription;
+        if (!sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
+          throw new Error('Invalid subscription data');
+        }
+        const encrypted = await encryptWebPush({
+          subscription: {
+            endpoint: sub.endpoint,
+            keys: {
+              p256dh: sub.keys.p256dh,
+              auth: sub.keys.auth,
+            },
           },
-        },
-        vapidKeyPair,
-        payload: JSON.stringify(payload),
-      });
+          vapidKeyPair,
+          payload: JSON.stringify(p),
+          proxyUrl: PROXY_URL,
+        });
 
-      const response = await fetch(PROXY_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          endpoint: encrypted.endpoint,
-          body: arrayBufferToBase64Url(encrypted.body),
-          headers: encrypted.headers,
-        }),
-      });
+        const response = await fetch(PROXY_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            endpoint: encrypted.endpoint,
+            body: arrayBufferToBase64Url(encrypted.body),
+            headers: encrypted.headers,
+          }),
+        });
 
-      if (!response.ok) {
-        throw new Error(await response.text());
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        return true;
+      };
+
+      const payloadStr = JSON.stringify(payload);
+      const MAX_CHUNK_SIZE = 2048;
+
+      if (payloadStr.length <= MAX_CHUNK_SIZE) {
+        return await send(payload);
+      } else {
+        const id = crypto.randomUUID();
+        const total = Math.ceil(payloadStr.length / MAX_CHUNK_SIZE);
+        for (let i = 0; i < total; i++) {
+          const chunkData = payloadStr.slice(i * MAX_CHUNK_SIZE, (i + 1) * MAX_CHUNK_SIZE);
+          const chunkPayload: MessagePayload = {
+            type: 'CHUNK',
+            id,
+            index: i,
+            total,
+            data: chunkData,
+          };
+          await send(chunkPayload);
+        }
+        return true;
       }
-      return true;
     } catch (e: any) {
       addLog(`Error sending message: ${e.message}`);
       return false;
@@ -261,20 +368,31 @@ function RouteComponent() {
   };
 
   const registerAsset = async () => {
-    if (!assetText) return;
+    if (assetMode === 'image' && !imageAsset) {
+      addLog('No image asset to broadcast');
+      return;
+    }
+    if (assetMode === 'text' && !assetText) {
+      addLog('No text asset to broadcast');
+      return;
+    }
 
     setIsBroadcasting(true);
     addLog('Starting asset broadcast...');
     if (clients.length === 0) {
       addLog('No clients connected. Asset registered locally.');
       // Save to cache
-      await dbPut('assets', 'latest-asset', assetText);
+      await dbPut('assets', 'latest-asset', assetMode === 'text' ? compressedAssetText : imageAsset);
+
+      await dbPut('assets', 'latest-asset-mode', assetMode);
       setIsBroadcasting(false);
       return;
     }
 
     // Save to cache
-    await dbPut('assets', 'latest-asset', assetText);
+    await dbPut('assets', 'latest-asset', assetMode === 'text' ? compressedAssetText : imageAsset);
+    await dbPut('assets', 'latest-asset-mode', assetMode);
+
     addLog('Asset saved to cache');
 
     addLog(`Broadcasting asset to ${clients.length} clients...`);
@@ -284,7 +402,8 @@ function RouteComponent() {
     for (const client of clients) {
       const success = await sendMessage(client, {
         type: 'ASSET',
-        asset: assetText,
+        asset: assetMode === 'text' ? compressedAssetText : imageAsset,
+        assetMode: assetMode,
       });
 
       if (!success && client.subscription.endpoint) {
@@ -374,29 +493,74 @@ function RouteComponent() {
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <label htmlFor="assetText">
-              <span className=" font-bold">Asset to Share</span>
-              <p className=" text-sm block">Enter the text you want to share with connected clients.</p>
-            </label>
-            <textarea
-              id="assetText"
-              name="assetText"
-              readOnly={isBroadcasting}
-              value={assetText}
-              onChange={(e) => setAssetText(e.target.value)}
-              placeholder="Enter text to share..."
-              rows={5}
-              className="w-full border px-2 py-1 rounded text-sm read-only:opacity-50"
-            />
+          <div className="flex gap-2">
             <button
-              onClick={registerAsset}
-              disabled={!assetText || isBroadcasting}
-              className="bg-blue-500 text-white px-4 py-2 rounded block w-full disabled:opacity-50"
+              onClick={() => setAssetMode('text')}
+              className={`px-4 py-2 rounded block w-fit ${
+                assetMode === 'text' ? 'bg-blue-500 text-white' : 'bg-gray-200'
+              }`}
             >
-              {clients.length === 0 ? `Register asset` : `Broadcast to ${clients.length} Clients`}
+              Text Asset
+            </button>
+            <button
+              onClick={() => setAssetMode('image')}
+              className={`px-4 py-2 rounded block w-fit ${
+                assetMode === 'image' ? 'bg-blue-500 text-white' : 'bg-gray-200'
+              }`}
+            >
+              Image Asset
             </button>
           </div>
+
+          {assetMode === 'text' ? (
+            <div className="flex flex-col gap-2">
+              <label htmlFor="assetText">
+                <span className=" font-bold">Asset to Share</span>
+                <p className=" text-sm block">Enter the text you want to share with connected clients.</p>
+              </label>
+              <textarea
+                id="assetText"
+                name="assetText"
+                readOnly={isBroadcasting}
+                value={assetText}
+                onChange={(e) => setAssetText(e.target.value)}
+                placeholder="Enter text to share..."
+                rows={5}
+                className="w-full border px-2 py-1 rounded text-sm read-only:opacity-50"
+              />
+              <p>
+                You have used {Math.max(0, 100 - (new Blob([compressedAssetText]).size / 4078) * 100).toFixed(2)}% of
+                4KB limit. The size is {new Blob([compressedAssetText]).size} bytes.
+              </p>
+              <button
+                onClick={registerAsset}
+                disabled={!assetText || isBroadcasting}
+                className="bg-blue-500 text-white px-4 py-2 rounded block w-full disabled:opacity-50"
+              >
+                {clients.length === 0 ? `Register asset` : `Broadcast to ${clients.length} Clients`}
+              </button>
+            </div>
+          ) : (
+            <>
+              <ImageForm setImageAsset={setImageAsset} />
+
+              {imageAsset && (
+                <>
+                  <p>
+                    You have used {Math.max(0, ((imageAsset.length * 2) / 4096) * 100).toFixed(2)}% of 4KB limit. The
+                    size is {imageAsset.length * 2} bytes.
+                  </p>
+                  <button
+                    onClick={registerAsset}
+                    disabled={!imageAsset || isBroadcasting}
+                    className="bg-blue-500 text-white px-4 py-2 rounded block w-full disabled:opacity-50"
+                  >
+                    {clients.length === 0 ? `Register asset` : `Broadcast to ${clients.length} Clients`}
+                  </button>
+                </>
+              )}
+            </>
+          )}
         </div>
 
         <div className="logs mt-4 p-2 bg-gray-100 rounded text-xs font-mono h-40 overflow-y-auto">

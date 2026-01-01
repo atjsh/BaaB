@@ -225,7 +225,7 @@ async function encryptPayload(payload, keys, options) {
   // Ensure that the ciphertext length doesn't exceed the record size
   if (ciphertext.byteLength > 4096 - 16) {
     // 16 is for auth tag
-    throw new Error('Payload too large for single record');
+    throw new Error(`Payload too large for single record; size: ${ciphertext.byteLength} bytes`);
   }
   const encryptedPayload = concat(header, new Uint8Array(ciphertext));
   return {
@@ -272,10 +272,7 @@ async function encryptWebPush(options) {
   const { subscription, vapidKeyPair, payload } = options;
   const encryptionOptions = { algorithm: 'aes128gcm', ttl: options.ttl, urgency: options.urgency };
 
-  // Use a dummy email for JWT since we are proxying.
-  const emailAddress = 'dummy@example.com';
-
-  const jwt = await createJWT(vapidKeyPair.privateKey, new URL(subscription.endpoint), emailAddress);
+  const jwt = await createJWT(vapidKeyPair.privateKey, new URL(subscription.endpoint), options.proxyUrl);
   const { encrypted, salt, appServerPublicKey } = await encryptPayload(payload, subscription.keys, encryptionOptions);
 
   const headers = await generateHeaders(vapidKeyPair.publicKey, jwt, encrypted, {
@@ -317,8 +314,8 @@ async function deserializeVapidKeys(keys) {
 
 // --- IndexedDB Helpers ---
 const DB_NAME = 'baab-db';
-const DB_VERSION = 1;
-const STORES = ['config', 'clients', 'assets'];
+const DB_VERSION = 2;
+const STORES = ['config', 'clients', 'assets', 'chunks'];
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -327,7 +324,7 @@ function openDB() {
     request.onsuccess = () => resolve(request.result);
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
-      STORES.forEach(store => {
+      STORES.forEach((store) => {
         if (!db.objectStoreNames.contains(store)) {
           db.createObjectStore(store);
         }
@@ -381,7 +378,7 @@ async function dbDelete(storeName, key) {
 }
 
 async function dbClear(storeName) {
-   const db = await openDB();
+  const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
     const store = tx.objectStore(storeName);

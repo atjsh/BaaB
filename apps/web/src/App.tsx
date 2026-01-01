@@ -259,6 +259,7 @@ function App() {
         },
         vapidKeyPair,
         payload: JSON.stringify(payload),
+        proxyUrl: PROXY_URL,
       });
 
       const response = await fetch(PROXY_URL, {
