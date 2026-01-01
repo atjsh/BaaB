@@ -1,7 +1,13 @@
+import { createFileRoute } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
-import { dbPut, dbGet, dbGetAll, dbDelete, dbClear } from './db';
+import encodeQR from 'qr';
+
+import { dbPut, dbGet, dbGetAll, dbDelete, dbClear } from '../db';
 import { deserializeVapidKeys, fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
-import { encryptWebPush, arrayBufferToBase64Url } from './web-push-encryption';
+import { encryptWebPush, arrayBufferToBase64Url } from '../web-push-encryption';
+
+import { HowToUse } from './-hot-to-use';
+import { SessionInfo } from './-session-info';
 
 const PROXY_URL = import.meta.env.VITE_PROXY_URL;
 
@@ -13,23 +19,48 @@ type MessagePayload = {
   asset?: string;
 };
 
-function App() {
-  const [mode, setMode] = useState<'setup' | 'server' | 'client'>('setup');
+export const Route = createFileRoute('/share')({
+  component: RouteComponent,
+  head: () => ({
+    meta: [
+      {
+        name: 'description',
+        content: 'Set up your browser to share securely using BaaB',
+      },
+      {
+        title: 'Share - BaaB',
+      },
+    ],
+  }),
+});
+
+const QRCode = ({ value }: { value: string }) => {
+  const [dataUrl, setDataUrl] = useState<string>('');
+
+  useEffect(() => {
+    const qr = encodeQR(value, 'svg');
+    const blob = new Blob([qr], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    setDataUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [value]);
+
+  return <img src={dataUrl} alt="QR Code" className=" w-full h-full" />;
+};
+
+function RouteComponent() {
   const [vapidKeys, setVapidKeys] = useState<VapidKeys | null>(null);
   const [subscription, setSubscription] = useState<PushSubscription | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
+  const [isServerStarted, setIsServerStarted] = useState(false);
+  const [isBroadcasting, setIsBroadcasting] = useState(false);
+  const [enlargeQr, setEnlargeQr] = useState(false);
 
   // Server State
   const [clients, setClients] = useState<RemoteConfig[]>([]);
   const [assetText, setAssetText] = useState(() => localStorage.getItem('baab_asset_draft') || '');
-
-  useEffect(() => {
-    console.log('[App] Clients list updated:', clients);
-  }, [clients]);
-
-  // Client State
-  const [serverConfig, setServerConfig] = useState<RemoteConfig | null>(null);
-  const [receivedAssets, setReceivedAssets] = useState<string[]>([]);
 
   const addLog = useCallback((msg: string) => {
     setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
@@ -51,9 +82,9 @@ function App() {
     localStorage.setItem('baab_asset_draft', assetText);
   }, [assetText]);
 
-  // Load clients from cache when in server mode
+  // Load clients from cache when server is started
   useEffect(() => {
-    if (mode === 'server') {
+    if (isServerStarted) {
       dbGetAll('clients').then((loadedClients) => {
         const validClients = loadedClients.filter((c): c is RemoteConfig => c !== null);
         setClients((prev) => {
@@ -67,31 +98,16 @@ function App() {
         }
       });
     }
-  }, [mode, addLog]);
+  }, [isServerStarted, addLog]);
 
   // Initialize
   useEffect(() => {
     const init = async () => {
-      // Check for client connect link
-      const params = new URLSearchParams(window.location.search);
-      const connectData = params.get('connect');
-
-      if (connectData) {
-        try {
-          const config = JSON.parse(atob(decodeURIComponent(connectData)));
-          setServerConfig(config);
-          setMode('client');
-          addLog('Client mode: Found server configuration');
-        } catch (e) {
-          addLog('Error parsing connection data');
-        }
-      } else {
-        // Restore mode from storage
-        const storedMode = localStorage.getItem('baab_mode');
-        if (storedMode === 'server') {
-          setMode('server');
-          addLog('Restored Server mode');
-        }
+      // Restore server state from storage
+      const storedMode = localStorage.getItem('baab_mode');
+      if (storedMode === 'server') {
+        setIsServerStarted(true);
+        addLog('Restored Server mode');
       }
 
       // Load existing keys
@@ -116,72 +132,49 @@ function App() {
 
   const handleIncomingMessage = useCallback(
     (payload: any) => {
-      console.log('[App] handleIncomingMessage payload:', payload);
-      // Payload might be JSON string or object depending on how it was sent/received
+      console.log('[Share] handleIncomingMessage payload:', payload);
       let data: MessagePayload;
       try {
         data = typeof payload === 'string' ? JSON.parse(payload) : payload;
-        // If payload.body is the JSON string (from SW)
         if (payload.body && typeof payload.body === 'string') {
           try {
             data = JSON.parse(payload.body);
           } catch {
-            // body is just text
             addLog(`Received raw text: ${payload.body}`);
             return;
           }
         }
-        console.log('[App] Processed data:', data);
       } catch (e) {
-        console.error('[App] Error parsing message:', e);
-        addLog('Received invalid message format');
+        console.error('[Share] Error parsing message:', e);
         return;
       }
 
       if (data.type === 'HANDSHAKE' && data.senderConfig) {
-        console.log('[App] Processing HANDSHAKE. Mode:', mode);
-        addLog(`Received HANDSHAKE in ${mode} mode`);
-        if (mode === 'server') {
+        addLog('Received HANDSHAKE');
+        if (isServerStarted) {
           setClients((prev) => {
-            console.log('[App] Adding client. Current clients:', prev.length);
             // Avoid duplicates
             const exists = prev.find((c) => c.subscription.endpoint === data.senderConfig!.subscription.endpoint);
             if (exists) {
-              console.log('[App] Client already exists');
               return prev;
             }
-            console.log('[App] Client added');
-
-            // Note: SW now handles sending the asset to new clients in background.
-            // We keep this here just in case the SW logic fails or for immediate feedback if window is open.
-            // But to avoid double sending, we can remove it or keep it as redundant.
-            // Let's keep it but log it.
-            console.log('[App] SW should have handled asset sending, but checking cache just in case');
-
+            // Save to DB
+            if (data.senderConfig?.subscription.endpoint) {
+              dbPut('clients', data.senderConfig.subscription.endpoint, data.senderConfig);
+            }
             return [...prev, data.senderConfig!];
           });
           addLog('New client connected!');
-        } else {
-          console.log('[App] Not in server mode, ignoring handshake');
-        }
-      } else if (data.type === 'ASSET' && data.asset) {
-        addLog('Received ASSET');
-        setReceivedAssets((prev) => [data.asset!, ...prev]);
-      } else if (data.type === 'ACK') {
-        addLog('Received ACK');
-        if (data.asset) {
-          addLog('Received ASSET with ACK');
-          setReceivedAssets((prev) => [data.asset!, ...prev]);
         }
       }
     },
-    [mode, addLog],
+    [isServerStarted, addLog],
   );
 
   // Listen for SW messages
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      console.log('[App] SW Message:', event.data);
+      console.log('[Share] SW Message:', event.data);
       if (event.data && event.data.type === 'PUSH_RECEIVED') {
         const payload = event.data.payload;
         handleIncomingMessage(payload);
@@ -198,13 +191,9 @@ function App() {
       keys = await serializeVapidKeys(k);
       setVapidKeys(keys);
       localStorage.setItem('baab_vapid_keys', JSON.stringify(keys));
-
-      // Also save to Cache for SW access
       await dbPut('config', 'vapid-keys', keys);
-
       addLog('Generated new VAPID keys');
     } else {
-      // Ensure keys are in cache even if loaded from localStorage
       await dbPut('config', 'vapid-keys', keys);
     }
 
@@ -224,21 +213,9 @@ function App() {
 
   const startServer = async () => {
     await ensureKeysAndSubscription();
-    setMode('server');
+    setIsServerStarted(true);
     localStorage.setItem('baab_mode', 'server');
     addLog('Server started');
-  };
-
-  const connectToServer = async () => {
-    if (!serverConfig) return;
-    const { keys, sub } = await ensureKeysAndSubscription();
-
-    // Send Handshake
-    await sendMessage(serverConfig, {
-      type: 'HANDSHAKE',
-      senderConfig: { subscription: sub.toJSON(), vapidKeys: keys! },
-    });
-    addLog('Sent handshake to server');
   };
 
   const sendMessage = async (targetConfig: RemoteConfig, payload: MessagePayload) => {
@@ -281,8 +258,18 @@ function App() {
     }
   };
 
-  const broadcastAsset = async () => {
+  const registerAsset = async () => {
     if (!assetText) return;
+
+    setIsBroadcasting(true);
+    addLog('Starting asset broadcast...');
+    if (clients.length === 0) {
+      addLog('No clients connected. Asset registered locally.');
+      // Save to cache
+      await dbPut('assets', 'latest-asset', assetText);
+      setIsBroadcasting(false);
+      return;
+    }
 
     // Save to cache
     await dbPut('assets', 'latest-asset', assetText);
@@ -317,14 +304,15 @@ function App() {
     }
 
     addLog('Broadcast complete');
-    setAssetText('');
+    setIsBroadcasting(false);
   };
 
   const getShareLink = () => {
     if (!subscription || !vapidKeys) return '';
     const config: RemoteConfig = { subscription: subscription.toJSON(), vapidKeys };
     const str = btoa(JSON.stringify(config));
-    return `${window.location.origin}?connect=${encodeURIComponent(str)}`;
+    // Point to the receive route
+    return `${window.location.origin}/receive?connect=${encodeURIComponent(str)}`;
   };
 
   const handleReset = async () => {
@@ -339,105 +327,117 @@ function App() {
 
     setVapidKeys(null);
     setSubscription(null);
-    setMode('setup');
+    setIsServerStarted(false);
     setClients([]);
-    setServerConfig(null);
-    setReceivedAssets([]);
     setLogs([]);
-    window.history.pushState({}, '', '/'); // Clear URL params
   };
 
-  return (
-    <div className="app-container">
-      <h1>BaaB</h1>
-      <p>Somewhat modern P2P Sharing</p>
-
-      <div className="status-bar">
-        Status: <strong>{mode.toUpperCase()}</strong>
-        <button onClick={handleReset} style={{ marginLeft: '10px', float: 'right' }}>
-          Reset
-        </button>
-      </div>
-
-      {mode === 'setup' && (
-        <div className="section">
-          <h2>Setup</h2>
-          <button onClick={startServer}>Start as Server</button>
-          {serverConfig && (
-            <div style={{ marginTop: '10px' }}>
-              <p>Detected Server Config from URL</p>
-              <button onClick={connectToServer}>Connect to Server</button>
-            </div>
-          )}
+  if (isServerStarted) {
+    return (
+      <main className="p-2 flex flex-col gap-4 mb-20">
+        <SessionInfo />
+        <div className="flex justify-between items-center">
+          <h2 className="text-xl font-bold">Share</h2>
+          <button onClick={handleReset} className="text-red-500 text-sm underline">
+            Close Server
+          </button>
         </div>
-      )}
 
-      {mode === 'server' && (
-        <>
-          <div className="section">
-            <h2>Server Dashboard</h2>
-            <p>Share this link with clients:</p>
-            <textarea readOnly value={getShareLink()} rows={3} style={{ width: '100%' }} />
+        <div className="flex flex-col gap-10 max-w-md">
+          <div className="flex flex-col gap-1">
+            <label htmlFor="serverUrl">
+              <span className=" font-bold">Share this link</span>
+              <p className=" text-sm block">To get started, Share this link with people you want to receive assets:</p>
+            </label>
+            <textarea
+              id="serverUrl"
+              name="serverUrl"
+              readOnly
+              value={getShareLink()}
+              className="w-full border px-2 py-1 rounded text-xs resize-none"
+              onClick={(e) => e.currentTarget.select()}
+              rows={3}
+            />
+            <div className="mt-2">
+              <span>Or scan this QR code (click to enlarge):</span>
+              <div
+                className={`mt-1 p-2 border ${enlargeQr ? 'w-full' : 'w-48'} rounded cursor-pointer`}
+                onClick={() => setEnlargeQr(!enlargeQr)}
+              >
+                <QRCode value={getShareLink()} />
+              </div>
+            </div>
           </div>
 
-          <div className="section">
-            <h2>Connected Clients ({clients.length})</h2>
-            <ul>
+          <div className="flex flex-col gap-2">
+            <label htmlFor="assetText">
+              <span className=" font-bold">Asset to Share</span>
+              <p className=" text-sm block">Enter the text or HTML content you want to share with connected clients.</p>
+            </label>
+            <textarea
+              id="assetText"
+              name="assetText"
+              readOnly={isBroadcasting}
+              value={assetText}
+              onChange={(e) => setAssetText(e.target.value)}
+              placeholder="Enter text or HTML to share..."
+              rows={5}
+              className="w-full border px-2 py-1 rounded text-sm read-only:opacity-50"
+            />
+            <button
+              onClick={registerAsset}
+              disabled={!assetText || isBroadcasting}
+              className="bg-blue-500 text-white px-4 py-2 rounded block w-full disabled:opacity-50"
+            >
+              {clients.length === 0 ? `Register asset` : `Broadcast to ${clients.length} Clients`}
+            </button>
+          </div>
+        </div>
+
+        <div className="logs mt-4 p-2 bg-gray-100 rounded text-xs font-mono h-40 overflow-y-auto">
+          {logs.map((log, i) => (
+            <div key={i}>{log}</div>
+          ))}
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <h3 className="font-bold">Connected Clients ({clients.length})</h3>
+          {clients.length === 0 ? (
+            <p className="text-sm text-gray-500">No clients connected yet.</p>
+          ) : (
+            <ul className="list-disc list-inside text-sm">
               {clients.map((c, i) => (
-                <li key={i}>
+                <li key={i} className="truncate">
                   Client {i + 1} ({c.subscription.endpoint?.slice(0, 20)}...)
                 </li>
               ))}
             </ul>
-          </div>
+          )}
+        </div>
+      </main>
+    );
+  }
 
-          <div className="section">
-            <h2>Share Asset</h2>
-            <textarea
-              value={assetText}
-              onChange={(e) => setAssetText(e.target.value)}
-              placeholder="Enter text to share..."
-              rows={3}
-              style={{ width: '100%' }}
-            />
-            <button onClick={broadcastAsset} disabled={clients.length === 0}>
-              Update Asset with
-            </button>
-          </div>
-        </>
-      )}
+  return (
+    <main className=" p-2 flex flex-col gap-4 mb-20">
+      <h2 className="text-xl font-bold">Share</h2>
+      <HowToUse />
 
-      {mode === 'client' && (
-        <>
-          <div className="section">
-            <h2>Client Dashboard</h2>
-            <p>Connected to Server</p>
-            {!subscription && <button onClick={connectToServer}>Complete Connection</button>}
-          </div>
+      <div className="flex flex-col gap-4 mt-4">
+        <p>Start a server to begin sharing files with others.</p>
+        <button
+          onClick={startServer}
+          className="bg-blue-500 text-white px-4 py-2 rounded block w-fit disabled:opacity-50"
+        >
+          Start Sharing
+        </button>
+      </div>
 
-          <div className="section">
-            <h2>Received Assets</h2>
-            {receivedAssets.length === 0 ? (
-              <p>No assets received yet.</p>
-            ) : (
-              <div className="assets-list">
-                {receivedAssets.map((asset, i) => (
-                  <div key={i} className="asset-card" dangerouslySetInnerHTML={{ __html: asset }} />
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      )}
-
-      <div className="logs">
-        <h3>Logs</h3>
+      <div className="logs mt-4 p-2 bg-gray-100 rounded text-xs font-mono h-40 overflow-y-auto">
         {logs.map((log, i) => (
           <div key={i}>{log}</div>
         ))}
       </div>
-    </div>
+    </main>
   );
 }
-
-export default App;

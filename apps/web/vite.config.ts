@@ -1,16 +1,17 @@
-import react from '@vitejs/plugin-react';
-import { tscPlugin } from '@wroud/vite-plugin-tsc';
 import { defineConfig } from 'vite';
+
+import tailwindcss from '@tailwindcss/vite';
+import { tanstackRouter } from '@tanstack/router-plugin/vite';
+import react from '@vitejs/plugin-react';
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
-    react(),
-    tscPlugin({
-      tscArgs: ['-b'],
-      prebuild: true,
-      packageManager: 'npx' as 'npm',
-      verbose: true,
+    tailwindcss(),
+    tanstackRouter({
+      target: 'react',
+      autoCodeSplitting: true,
     }),
+    react(),
   ],
 });
