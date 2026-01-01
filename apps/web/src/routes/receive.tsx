@@ -31,15 +31,6 @@ export const Route = createFileRoute('/receive')({
   }),
 });
 
-function checkIfSupportedBrowser(): boolean {
-  const isServiceWorkerSupported = 'serviceWorker' in navigator;
-  const isPushManagerSupported = 'PushManager' in window;
-  const isNotificationsSupported = 'Notification' in window;
-  const isLocalStorageSupported = 'localStorage' in window;
-
-  return isServiceWorkerSupported && isPushManagerSupported && isNotificationsSupported && isLocalStorageSupported;
-}
-
 function Receive() {
   const [vapidKeys, setVapidKeys] = useState<VapidKeys | null>(null);
   const [subscription, setSubscription] = useState<PushSubscription | null>(null);
