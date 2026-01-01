@@ -61,7 +61,6 @@ function RouteComponent() {
     assetText,
     setAssetText,
     setImageAsset,
-    directoryAsset,
     setDirectoryAsset,
     chunkConcurrency,
     chunkJitterMs,

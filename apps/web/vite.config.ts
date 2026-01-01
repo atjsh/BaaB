@@ -21,7 +21,6 @@ export default defineConfig({
       registerType: 'autoUpdate',
       injectManifest: {
         swSrc: 'src/sw.ts',
-        swDest: 'sw.js',
         maximumFileSizeToCacheInBytes: 3000000,
       },
       devOptions: {

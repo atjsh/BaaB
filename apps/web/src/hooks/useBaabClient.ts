@@ -9,20 +9,6 @@ const PROXY_URL = import.meta.env.VITE_PROXY_URL;
 const DEFAULT_CHUNK_CONCURRENCY = 2;
 const DEFAULT_CHUNK_JITTER_MS = 80;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const bytesToHuman = (bytes: number) => {
-  if (!bytes || bytes < 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / Math.pow(1024, idx);
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[idx]}`;
-};
-const bpsToHuman = (bps: number) => {
-  if (!bps || bps < 0) return '0 B/s';
-  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-  const idx = Math.min(Math.floor(Math.log(bps) / Math.log(1024)), units.length - 1);
-  const value = bps / Math.pow(1024, idx);
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[idx]}`;
-};
 const dataUrlBytes = (dataUrl: string) => {
   try {
     const base64 = dataUrl.split(',')[1] || '';

@@ -52,8 +52,6 @@ function Receive() {
     connectionStatus,
     handleConnectData,
     resetClient,
-    chunkConcurrency,
-    chunkJitterMs,
     lastReceiveBytes,
     lastReceiveMs,
   } = useBaabClient({
