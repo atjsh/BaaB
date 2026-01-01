@@ -1,10 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useState, useEffect, useCallback } from 'react';
 import encodeQR from 'qr';
-
-import { dbPut, dbGet, dbGetAll, dbDelete, dbClear } from '../db';
+import { useCallback, useEffect, useState } from 'react';
 import { deserializeVapidKeys, fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
-import { encryptWebPush, arrayBufferToBase64Url } from '../web-push-encryption';
+
+import { dbClear, dbDelete, dbGet, dbGetAll, dbPut } from '../db';
+import { arrayBufferToBase64Url, encryptWebPush } from '../web-push-encryption';
 
 import { HowToUse } from './-hot-to-use';
 import { SessionInfo } from './-session-info';

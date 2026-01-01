@@ -1,8 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useState, useEffect, useCallback } from 'react';
-import { dbPut, dbGet, dbDelete } from '../db';
+import { useCallback, useEffect, useState } from 'react';
 import { deserializeVapidKeys, fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
-import { encryptWebPush, arrayBufferToBase64Url } from '../web-push-encryption';
+
+import { dbClear, dbGet, dbPut } from '../db';
+import { arrayBufferToBase64Url, encryptWebPush } from '../web-push-encryption';
+
 import { HowToUse } from './-hot-to-use';
 import { SessionInfo } from './-session-info';
 
@@ -257,17 +259,18 @@ function Receive() {
     localStorage.removeItem('baab_vapid_keys');
     localStorage.removeItem('baab_mode');
 
-    setVapidKeys(null);
-    setSubscription(null);
-    setLogs([]);
+    // Clear caches
+    await dbClear('config');
+    await dbClear('clients');
+    await dbClear('assets');
 
     setVapidKeys(null);
     setSubscription(null);
     setServerConfig(null);
     setReceivedAssets([]);
     setConnectionStatus('idle');
-    localStorage.removeItem('baab_vapid_keys');
-    await dbDelete('config', 'server-config');
+    setLogs([]);
+
     addLog('Reset connection and cleared data');
   };
 
