@@ -6,6 +6,7 @@ import { arrayBufferToBase64Url, encryptWebPush } from '../lib/web-push-encrypti
 import type { DirectoryManifestEntry, MessagePayload, RemoteConfig, VapidKeys } from '@baab/shared';
 
 const PROXY_URL = import.meta.env.VITE_PROXY_URL;
+const VAPID_SUBJECT = import.meta.env.VITE_VAPID_SUBJECT ?? `https://${window.location.host}`;
 const DEFAULT_CHUNK_CONCURRENCY = 2;
 const DEFAULT_CHUNK_JITTER_MS = 80;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -86,10 +87,10 @@ export function useBaabClient({
     if (initializedRef.current) return;
     initializedRef.current = true;
     const init = async () => {
-      // Load existing keys
-      const storedKeys = localStorage.getItem('baab_vapid_keys');
+      // Load existing keys from IndexedDB
+      const storedKeys = await dbGet('config', 'vapid-keys');
       if (storedKeys) {
-        setVapidKeys(JSON.parse(storedKeys));
+        setVapidKeys(storedKeys);
       }
 
       const storedConcurrency = await dbGet('config', 'chunk-concurrency');
@@ -142,7 +143,7 @@ export function useBaabClient({
           },
           vapidKeyPair,
           payload: JSON.stringify(p),
-          proxyUrl: PROXY_URL,
+          contact: VAPID_SUBJECT,
         });
 
         const response = await fetch(PROXY_URL, {

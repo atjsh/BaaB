@@ -7,6 +7,10 @@ import type { DirectoryAsset } from '../types/assets';
 import type { MessagePayload, RemoteConfig, VapidKeys } from '@baab/shared';
 
 const PROXY_URL = import.meta.env.VITE_PROXY_URL;
+// Prefer explicit VAPID subject; fall back to host if production, or a safe mailto on localhost.
+const VAPID_SUBJECT =
+  import.meta.env.VITE_VAPID_SUBJECT ||
+  (window.location.hostname === 'localhost' ? 'mailto:baab@example.com' : `https://${window.location.host}`);
 const DEFAULT_CHUNK_CONCURRENCY = 2;
 const DEFAULT_CHUNK_JITTER_MS = 80;
 
@@ -156,17 +160,17 @@ export function useBaabServer({
   // Initialize
   useEffect(() => {
     const init = async () => {
-      // Restore server state from storage
-      const storedMode = localStorage.getItem('baab_mode');
+      // Restore server state from IndexedDB
+      const storedMode = await dbGet('config', 'mode');
       if (storedMode === 'server') {
         setIsServerStarted(true);
         addLog('Restored Server mode');
       }
 
       // Load existing keys
-      const storedKeys = localStorage.getItem('baab_vapid_keys');
+      const storedKeys = await dbGet('config', 'vapid-keys');
       if (storedKeys) {
-        setVapidKeys(JSON.parse(storedKeys));
+        setVapidKeys(storedKeys);
       }
 
       // Load delivery tuning
@@ -257,7 +261,7 @@ export function useBaabServer({
   const startServer = async () => {
     await ensureKeysAndSubscription();
     setIsServerStarted(true);
-    localStorage.setItem('baab_mode', 'server');
+    await dbPut('config', 'mode', 'server');
     addLog('Server started');
   };
 
@@ -281,7 +285,7 @@ export function useBaabServer({
           },
           vapidKeyPair,
           payload: JSON.stringify(p),
-          proxyUrl: PROXY_URL,
+          contact: VAPID_SUBJECT,
         });
 
         const response = await fetch(PROXY_URL, {

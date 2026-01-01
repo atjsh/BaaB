@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
-import { dbClear, dbPut } from '../lib/db';
+import { dbClear, dbGet, dbPut } from '../lib/db';
 import type { VapidKeys } from '@baab/shared';
 
 type EnsureOptions = {
@@ -20,16 +20,15 @@ export function useBaab() {
     const overrideKeys = opts?.vapidKeysOverride;
     let keys = overrideKeys ?? vapidKeys;
     if (!keys) {
-      // Try to load from local storage first
-      const storedKeys = localStorage.getItem('baab_vapid_keys');
+      // Load from IndexedDB cache first
+      const storedKeys = await dbGet('config', 'vapid-keys');
       if (storedKeys) {
-        keys = JSON.parse(storedKeys);
+        keys = storedKeys;
         setVapidKeys(keys);
       } else {
         const k = await generateVapidKeys();
         keys = await serializeVapidKeys(k);
         setVapidKeys(keys);
-        localStorage.setItem('baab_vapid_keys', JSON.stringify(keys));
         await dbPut('config', 'vapid-keys', keys);
         addLog('Generated new VAPID keys');
       }
@@ -37,7 +36,6 @@ export function useBaab() {
       // Ensure keys are in DB
       await dbPut('config', 'vapid-keys', keys);
       setVapidKeys(keys);
-      localStorage.setItem('baab_vapid_keys', JSON.stringify(keys));
     }
 
     let sub = subscription;
@@ -68,8 +66,6 @@ export function useBaab() {
 
   const reset = async () => {
     if (subscription) await subscription.unsubscribe();
-    localStorage.removeItem('baab_vapid_keys');
-    localStorage.removeItem('baab_mode');
 
     // Clear caches
     await dbClear('config');

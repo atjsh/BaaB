@@ -12,6 +12,7 @@ cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);
 
 const PROXY_URL = import.meta.env.VITE_PROXY_URL || 'http://localhost:3000/push-proxy';
+const VAPID_SUBJECT = import.meta.env.VITE_VAPID_SUBJECT || `https://${self.location.host}`;
 const MAX_CHUNK_SIZE = 2048;
 const DEFAULT_CHUNK_CONCURRENCY = 2;
 const DEFAULT_CHUNK_JITTER_MS = 80;
@@ -100,7 +101,7 @@ async function sendPushMessage(clientConfig: RemoteConfig, payload: MessagePaylo
     },
     vapidKeyPair,
     payload: JSON.stringify(payload),
-    proxyUrl: PROXY_URL,
+    contact: VAPID_SUBJECT,
   });
 
   // Send to proxy

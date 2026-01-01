@@ -137,16 +137,20 @@ async function signJWT(header: any, payload: any, privateKey: CryptoKey) {
   return `${content}.${encodedSignature}`;
 }
 
-export async function createJWT(privateVapidKey: CryptoKey, endpoint: URL, email: string) {
+export async function createJWT(privateVapidKey: CryptoKey, endpoint: URL, subject: string) {
   const aud = endpoint.origin;
   const exp = Math.floor(Date.now() / 1000) + 12 * 60 * 60; // 12 hours from now
-  const sub = `mailto:${email}`;
+  const normalizedSub = (() => {
+    if (subject.startsWith('mailto:') || subject.startsWith('https://')) return subject;
+    if (subject.startsWith('http://')) return subject.replace('http://', 'https://');
+    return `mailto:${subject}`;
+  })();
   return await signJWT(
     { alg: 'ES256', typ: 'JWT' },
     {
       aud,
       exp,
-      sub,
+      sub: normalizedSub,
     },
     privateVapidKey,
   );
@@ -259,8 +263,12 @@ export async function generateHeaders(
     headers.append('Crypto-Key', `p256ecdsa=${encodedPubKey};dh=${encodedLocalPubKey}`);
     headers.append('Encryption', `salt=${toBase64Url(options.salt)}`);
   } else {
+    const exportedLocalPubKey = await crypto.subtle.exportKey('raw', options.appServerPubKey);
+    const encodedLocalPubKey = toBase64Url(exportedLocalPubKey);
     headers.append('Authorization', `vapid t=${jwt}, k=${encodedPubKey}`);
     headers.append('Content-Encoding', 'aes128gcm');
+    headers.append('Crypto-Key', `p256ecdsa=${encodedPubKey};dh=${encodedLocalPubKey}`);
+    headers.append('Encryption', `salt=${toBase64Url(options.salt)}`);
   }
   return headers;
 }
@@ -277,7 +285,7 @@ export interface EncryptWebPushOptions {
   };
   vapidKeyPair: CryptoKeyPair;
   payload: string;
-  proxyUrl: string;
+  contact: string;
   ttl?: number;
   urgency?: 'very-low' | 'low' | 'normal' | 'high';
 }
@@ -286,7 +294,7 @@ export async function encryptWebPush(options: EncryptWebPushOptions) {
   const { subscription, vapidKeyPair, payload } = options;
   const encryptionOptions = { algorithm: 'aes128gcm', ttl: options.ttl, urgency: options.urgency };
 
-  const jwt = await createJWT(vapidKeyPair.privateKey, new URL(subscription.endpoint), options.proxyUrl);
+  const jwt = await createJWT(vapidKeyPair.privateKey, new URL(subscription.endpoint), options.contact);
   const { encrypted, salt, appServerPublicKey } = await encryptPayload(payload, subscription.keys, encryptionOptions);
 
   const headers = await generateHeaders(vapidKeyPair.publicKey, jwt, encrypted, {
