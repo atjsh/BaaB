@@ -1,5 +1,5 @@
 import { compress, decompress } from 'lz-string';
-import { use, useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
 
 import { share } from '@baab/shared';
@@ -101,7 +101,7 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
               const p256dh = subjson.keys.p256dh;
               const auth = subjson.keys.auth;
 
-              await shareStorage?.localPushSendStorage.put(localPushSendId, {
+              await shareStorage?.localPushSendStorage.put({
                 id: localPushSendId,
                 messageEncryption: {
                   encoding: PushManager.supportedContentEncodings[0],
@@ -153,7 +153,7 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
                 }
                 // Save to DB
                 if (payload.o.pushSubscription.endpoint) {
-                  shareStorage?.remotePushSendStorage.put(payload.o.id, payload.o);
+                  shareStorage?.remotePushSendStorage.put(payload.o);
                 }
                 return [...prev, payload.o];
               });
@@ -218,7 +218,7 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
         vapidKeys,
       };
 
-      await shareStorage?.localPushSendStorage.put(localPushSendId, localPushSendEntry);
+      await shareStorage?.localPushSendStorage.put(localPushSendEntry);
       addLog('Subscribed to push notifications');
     }
 
@@ -252,17 +252,9 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
 
     const assetPayload =
       assetMode === 'text' ? compressedAssetText : assetMode === 'image' ? imageAsset : directoryAsset!.zipDataUrl;
-    const manifestPayload = assetMode === 'directory' ? directoryAsset!.manifest : undefined;
-    const directoryName = assetMode === 'directory' ? directoryAsset!.directoryName : undefined;
-    const totalBytes = assetMode === 'directory' ? directoryAsset!.totalBytes : undefined;
-    const fileCount = assetMode === 'directory' ? directoryAsset!.fileCount : undefined;
 
     setIsBroadcasting(true);
     addLog('Starting asset broadcast...');
-
-    // Save to cache
-    // await dbPut('assets', 'latest-asset', assetPayload);
-    // await dbPut('assets', 'latest-asset-mode', assetMode);
 
     await shareStorage?.latestAssetStorage.put(1, {
       contentType: assetMode === 'text' ? 'plain/text' : assetMode === 'image' ? 'image/webp' : 'application/zip',

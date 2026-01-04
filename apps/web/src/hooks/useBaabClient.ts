@@ -12,7 +12,7 @@ interface UseBaabClientProps {
 
 export function useBaabClient({ addLog }: UseBaabClientProps) {
   const [localPushSubscription, setLocalPushSubscription] = useState<PushSubscription | null>(null);
-  const [localPushSend, setLocalPushSendOption] = useState<share.ShareLocalPushSendOptions | null>(null);
+  const [, setLocalPushSendOption] = useState<share.ShareLocalPushSendOptions | null>(null);
   const [isShareStorageReady, setIsShareStorageReady] = useState(false);
   const [shareStorage, setSharedStorage] = useState<ShareStorageManager>();
   useEffect(() => {
@@ -34,7 +34,7 @@ export function useBaabClient({ addLog }: UseBaabClientProps) {
       try {
         const config = JSON.parse(atob(decodeURIComponent(connectData)));
         setServerConfig(config);
-        await (await ShareStorageManager.createInstance()).remotePushSendStorage.put(config.id, config);
+        await (await ShareStorageManager.createInstance()).remotePushSendStorage.put(config);
         addLog('Server configuration loaded');
         setConnectionStatus('connecting');
       } catch (e) {
@@ -90,7 +90,7 @@ export function useBaabClient({ addLog }: UseBaabClientProps) {
             const p256dh = subjson.keys.p256dh;
             const auth = subjson.keys.auth;
 
-            await shareStorage?.localPushSendStorage.put(localPushSendId, {
+            await shareStorage?.localPushSendStorage.put({
               id: localPushSendId,
               messageEncryption: {
                 encoding: PushManager.supportedContentEncodings[0],
@@ -182,7 +182,7 @@ export function useBaabClient({ addLog }: UseBaabClientProps) {
           addLog('No active Service Worker controller found');
         }
 
-        await shareStorage?.localPushSendStorage.put(localPushSendId, localPushSendEntry);
+        await shareStorage?.localPushSendStorage.put(localPushSendEntry);
         addLog('Subscribed to push notifications');
       }
 

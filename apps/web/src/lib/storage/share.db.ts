@@ -22,7 +22,7 @@ export class LocalPushSendRepository {
     );
   }
 
-  async put(id: string, entry: share.ShareLocalPushSendIndexedDBEntry): Promise<void> {
+  async put(entry: share.ShareLocalPushSendIndexedDBEntry): Promise<void> {
     return new Promise((resolve, reject) => {
       const tx = this.#db.transaction(share.ShareIndexedDBStore.localPushSendStorageName, 'readwrite');
       const store = tx.objectStore(share.ShareIndexedDBStore.localPushSendStorageName);
@@ -90,7 +90,7 @@ export class RemotePushSendRepository {
     );
   }
 
-  async put(id: string, entry: share.ShareRemotePushSendIndexedDBEntry): Promise<void> {
+  async put(entry: share.ShareRemotePushSendIndexedDBEntry): Promise<void> {
     return new Promise((resolve, reject) => {
       const tx = this.#db.transaction(share.ShareIndexedDBStore.remotePushSendStorageName, 'readwrite');
       const store = tx.objectStore(share.ShareIndexedDBStore.remotePushSendStorageName);
@@ -158,7 +158,7 @@ export class ReceivedChunkedMessageRepository {
     );
   }
 
-  async put(id: number, entry: share.ShareReceivedChunkedMessageIndexedDBEntry): Promise<void> {
+  async put(entry: share.ShareReceivedChunkedMessageIndexedDBEntry): Promise<void> {
     return new Promise((resolve, reject) => {
       const tx = this.#db.transaction(share.ShareIndexedDBStore.receivedChunkedMessagesStorageName, 'readwrite');
       const store = tx.objectStore(share.ShareIndexedDBStore.receivedChunkedMessagesStorageName);

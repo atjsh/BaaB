@@ -1,4 +1,4 @@
-import { ValueOf } from '../util';
+import type { ValueOf } from '../util';
 
 /**
  * VAPID keypair

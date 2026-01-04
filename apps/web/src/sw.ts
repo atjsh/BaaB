@@ -322,7 +322,7 @@ const handleShareChunkedMessage = async (
   chunkedPayload: share.ChunkedShareMessagePayload,
   shareStorageManager: ShareStorageManager,
 ) => {
-  await shareStorageManager.receivedChunkedMessagesStorage.put(getRandomInt(1, 0xffffffff), chunkedPayload);
+  await shareStorageManager.receivedChunkedMessagesStorage.put(chunkedPayload);
 
   const allChunks = await shareStorageManager.receivedChunkedMessagesStorage.getAll();
   const relevantChunks = allChunks.filter(
@@ -371,7 +371,7 @@ const handleShareChunkedMessage = async (
     switch (shareMessagePayload.fullMessage.t) {
       case share.ShareMessagePayloadType.GUEST_TO_HOST_HANDSHAKE:
         const remotePushSendOption = shareMessagePayload.fullMessage.o;
-        await shareStorageManager.remotePushSendStorage.put(remotePushSendOption.id, remotePushSendOption);
+        await shareStorageManager.remotePushSendStorage.put(remotePushSendOption);
 
         await chunkAndSendShareMessage(
           JSON.stringify({
