@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { blobToWebP } from 'webp-converter-browser';
 
 type Props = {
@@ -9,6 +9,7 @@ export const ImageForm: React.FC<Props> = ({ setImageAsset }) => {
   const [imageDraft, setImageDraft] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string>('');
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (imageDraft) {
@@ -59,12 +60,19 @@ export const ImageForm: React.FC<Props> = ({ setImageAsset }) => {
 
       <label
         htmlFor="imageUpload"
-        className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-sm text-gray-600 cursor-pointer hover:border-gray-400 hover:bg-gray-50 transition"
+        className="border-2 border-dashed border-gray-300 rounded-lg p-24 text-sm text-gray-600 cursor-pointer hover:border-gray-400 hover:bg-gray-50 transition"
       >
         <div className="flex flex-col items-center gap-2">
           <span className="font-semibold">Click to choose or drag an image</span>
         </div>
-        <input type="file" id="imageUpload" accept="image/*" onChange={handleFileChange} className="hidden" />
+        <input
+          ref={fileInputRef}
+          type="file"
+          id="imageUpload"
+          accept="image/*"
+          onChange={handleFileChange}
+          className="hidden"
+        />
       </label>
 
       {imageDraft && (
@@ -78,6 +86,20 @@ export const ImageForm: React.FC<Props> = ({ setImageAsset }) => {
               </div>
             )}
           </div>
+          <button
+            onClick={() => {
+              setImageDraft(null);
+              setFileName('');
+              setDimensions(null);
+              setImageAsset('');
+              if (fileInputRef.current) {
+                fileInputRef.current.value = '';
+              }
+            }}
+            className="ml-auto text-red-500 text-xs underline"
+          >
+            Remove
+          </button>
         </div>
       )}
     </div>

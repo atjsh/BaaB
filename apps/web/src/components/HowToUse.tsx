@@ -5,19 +5,24 @@ export const HowToUse: React.FC = () => {
   return (
     <>
       <div className="bg-gray-100 rounded p-4 flex flex-col gap-2">
-        <h4 className=" font-bold text-md">Don't use Private Browsing Mode, Incognito Mode, or Secret Mode</h4>
+        <h4 className=" font-bold text-md">
+          If you are using Private Browsing Mode, Incognito Mode, or Secret Mode; Please Don't.
+        </h4>
         <p>
           The app won't work properly in Private Browsing Mode, Incognito Mode, or Secret Mode due to following reasons:
-          <ul className=" list-disc list-inside ">
-            <li>
-              This app requires you to enable Push Notification and Service Worker features, which are usually disabled
-              in such modes.
-            </li>
-            <li>
-              This app uses Local Storage to store necessary data like VAPID keys and subscription information. This app
-              won't be able to store such data in these modes.
-            </li>
-          </ul>
+        </p>
+        <ul className=" list-disc list-inside ">
+          <li>
+            This app requires you to enable Push Notification and Service Worker features, which are usually disabled in
+            such modes.
+          </li>
+          <li>
+            This app uses Local Storage to store necessary data like VAPID keys and subscription information. This app
+            won't be able to store such data in these modes.
+          </li>
+        </ul>
+        <p>
+          Use <b>normal browsing mode</b> for the best experience.
         </p>
       </div>
       <details open className=" bg-gray-100 rounded p-4 flex flex-col gap-2">

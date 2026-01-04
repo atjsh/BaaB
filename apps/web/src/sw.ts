@@ -1,9 +1,13 @@
 /// <reference lib="webworker" />
+import { toBase64Url } from 'web-push-browser';
 import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching';
-import { deserializeVapidKeys, toBase64Url } from 'web-push-browser';
-import { dbDelete, dbGet, dbGetAll, dbPut } from './lib/db';
-import { encryptWebPush } from './lib/web-push-encryption';
-import type { MessagePayload, RemoteConfig } from '@baab/shared';
+
+import { chat, share } from '@baab/shared';
+
+import { ChatStorageManager } from './lib/storage/chat.db';
+import { ShareStorageManager } from './lib/storage/share.db';
+import { getRandomInt, sleep } from './lib/typescript';
+import { encryptWebPush, type EncryptWebPushResult } from './lib/web-push-encryption';
 
 declare let self: ServiceWorkerGlobalScope;
 
@@ -11,100 +15,69 @@ cleanupOutdatedCaches();
 
 precacheAndRoute(self.__WB_MANIFEST);
 
-const PROXY_URL = import.meta.env.VITE_PROXY_URL || 'http://localhost:3000/push-proxy';
-const VAPID_SUBJECT = import.meta.env.VITE_VAPID_SUBJECT || `https://${self.location.host}`;
-const MAX_CHUNK_SIZE = 2048;
-const DEFAULT_CHUNK_CONCURRENCY = 2;
-const DEFAULT_CHUNK_JITTER_MS = 80;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const PROXY_URL = import.meta.env.VITE_PROXY_URL;
 
-// Helper to get VAPID keys from storage
-// async function getVapidKeys() {
-//   return await dbGet('config', 'vapid-keys');
-// }
-
-async function saveClient(clientConfig: RemoteConfig) {
-  // Use endpoint as key
-  if (clientConfig.subscription.endpoint) {
-    await dbPut('clients', clientConfig.subscription.endpoint, clientConfig);
+async function broadcastToClients(data: chat.ChatMessagePayloadEnum | share.ShareMessagePayloadEnum) {
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  console.log('[SW] Broadcasting to', clients.length, 'clients');
+  for (const client of clients) {
+    client.postMessage({
+      type: 'PUSH_RECEIVED',
+      payload: data,
+    });
   }
 }
 
-async function getLatestAsset() {
-  return await dbGet('assets', 'latest-asset');
+async function broadcastDebugInfoToClients(info: any) {
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  console.log('[SW] Broadcasting debug info to', clients.length, 'clients');
+  for (const client of clients) {
+    client.postMessage({
+      type: 'DEBUG_INFO',
+      payload: info,
+    });
+  }
 }
 
-async function getLatestDirectoryMeta() {
-  const [manifest, dirname, bytes, fileCount] = await Promise.all([
-    dbGet('assets', 'latest-asset-manifest'),
-    dbGet('assets', 'latest-asset-dirname'),
-    dbGet('assets', 'latest-asset-bytes'),
-    dbGet('assets', 'latest-asset-filecount'),
-  ]);
-  return {
-    manifest,
-    directoryName: dirname,
-    totalBytes: typeof bytes === 'number' ? bytes : undefined,
-    fileCount: typeof fileCount === 'number' ? fileCount : undefined,
-  };
+async function hasVisibleClient(): Promise<boolean> {
+  const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const hasVisibleClient = windowClients.some((c) => c.visibilityState === 'visible');
+  return hasVisibleClient;
 }
 
-async function getChunkConfig() {
-  const [rawConcurrency, rawJitter] = await Promise.all([
-    dbGet('config', 'chunk-concurrency'),
-    dbGet('config', 'chunk-jitter-ms'),
-  ]);
+function parsePushMessageData(
+  pushMessageData: PushMessageData,
+): chat.ChunkedChatMessagePayload | share.ChunkedShareMessagePayload | null {
+  try {
+    const jsonParsed = pushMessageData.json();
+    if (typeof jsonParsed === 'object' && jsonParsed !== null) {
+      if (chat.isChunkedChatMessagePayload(jsonParsed)) {
+        return jsonParsed;
+      } else if (share.isChunkedShareMessagePayload(jsonParsed)) {
+        return jsonParsed;
+      }
+    }
 
-  const concurrency =
-    typeof rawConcurrency === 'number' && rawConcurrency > 0
-      ? Math.min(5, Math.max(1, Math.round(rawConcurrency)))
-      : DEFAULT_CHUNK_CONCURRENCY;
-
-  const jitterMs =
-    typeof rawJitter === 'number' && rawJitter >= 0
-      ? Math.min(500, Math.max(0, Math.round(rawJitter)))
-      : DEFAULT_CHUNK_JITTER_MS;
-
-  // Persist defaults so subsequent reads are consistent even if UI has not set them explicitly.
-  if (rawConcurrency === undefined || rawConcurrency === null) {
-    await dbPut('config', 'chunk-concurrency', concurrency);
+    return null;
+  } catch (e) {
+    console.error('Failed to parse push message data as JSON', e);
+    return null;
   }
-  if (rawJitter === undefined || rawJitter === null) {
-    await dbPut('config', 'chunk-jitter-ms', jitterMs);
-  }
-
-  return { concurrency, jitterMs };
 }
 
-async function sendPushMessage(clientConfig: RemoteConfig, payload: MessagePayload) {
-  const clientKeys = clientConfig.vapidKeys;
-  if (!clientKeys) {
-    console.error('[SW] No client VAPID keys found');
-    return;
-  }
+export interface ChatIncomingMessage {
+  /**
+   * Base64 encoded content of the message
+   */
+  base64Content: string;
 
-  const vapidKeyPair = await deserializeVapidKeys(clientKeys);
+  /**
+   * MIME type of the content
+   */
+  contentType: string;
+}
 
-  const sub = clientConfig.subscription;
-  if (!sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
-    console.error('[SW] Invalid subscription data');
-    return;
-  }
-
-  const encrypted = await encryptWebPush({
-    subscription: {
-      endpoint: sub.endpoint,
-      keys: {
-        p256dh: sub.keys.p256dh,
-        auth: sub.keys.auth,
-      },
-    },
-    vapidKeyPair,
-    payload: JSON.stringify(payload),
-    contact: VAPID_SUBJECT,
-  });
-
-  // Send to proxy
+async function sendPushMessage(encrypted: EncryptWebPushResult) {
   const res = await fetch(PROXY_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -118,14 +91,18 @@ async function sendPushMessage(clientConfig: RemoteConfig, payload: MessagePaylo
   if (!res.ok) {
     throw new Error(`Push proxy responded ${res.status}`);
   }
+
+  console.log({ body: await res.json() });
+
+  return res;
 }
 
-async function sendPushMessageWithRetry(clientConfig: RemoteConfig, payload: MessagePayload, maxAttempts = 3) {
+async function sendPushMessageWithRetry(encrypted: EncryptWebPushResult, maxAttempts = 3) {
   let attempt = 0;
   let lastErr: any;
   while (attempt < maxAttempts) {
     try {
-      await sendPushMessage(clientConfig, payload);
+      await sendPushMessage(encrypted);
       return;
     } catch (err) {
       lastErr = err;
@@ -138,204 +115,355 @@ async function sendPushMessageWithRetry(clientConfig: RemoteConfig, payload: Mes
   throw lastErr ?? new Error('Failed to send push message');
 }
 
-async function sendAckToClient(
-  clientConfig: RemoteConfig,
-  asset: string,
-  assetMode: 'text' | 'image' | 'directory',
-  meta?: { manifest?: any; directoryName?: string; totalBytes?: number; fileCount?: number },
-) {
-  try {
-    const payload: MessagePayload = {
-      type: 'ACK',
-      asset: asset,
-      assetMode: assetMode,
-      manifest: meta?.manifest,
-      directoryName: meta?.directoryName,
-      totalBytes: meta?.totalBytes,
-      fileCount: meta?.fileCount,
-    };
-
-    const payloadStr = JSON.stringify(payload);
-
-    if (payloadStr.length <= MAX_CHUNK_SIZE) {
-      await sendPushMessageWithRetry(clientConfig, payload);
-    } else {
-      const id = crypto.randomUUID();
-      const total = Math.ceil(payloadStr.length / MAX_CHUNK_SIZE);
-      const { concurrency, jitterMs } = await getChunkConfig();
-      console.log('[SW] ACK chunking with concurrency', concurrency, 'jitter', jitterMs, 'ms');
-      const chunkPayloads: MessagePayload[] = Array.from({ length: total }).map((_, i) => ({
-        type: 'CHUNK',
-        id,
-        index: i,
-        total,
-        data: payloadStr.slice(i * MAX_CHUNK_SIZE, (i + 1) * MAX_CHUNK_SIZE),
-      }));
-
-      for (let i = 0; i < chunkPayloads.length; i += concurrency) {
-        const batch = chunkPayloads.slice(i, i + concurrency);
-        await Promise.all(
-          batch.map(async (chunk) => {
-            if (jitterMs > 0) {
-              await sleep(Math.random() * jitterMs);
-            }
-            return sendPushMessageWithRetry(clientConfig, chunk);
-          }),
-        );
-      }
-    }
-
-    console.log('[SW] ACK sent to new client via background');
-  } catch (e) {
-    console.error('[SW] Error sending ACK:', e);
+async function chunkAndSendChatMessage(
+  payloadString: string,
+  localPushSendOption: chat.ChatLocalPushSendOptions,
+  remotePushSendOption: chat.ChatRemotePushSendOptions,
+): Promise<void> {
+  if (!remotePushSendOption.pushSubscription.endpoint) {
+    throw new Error('No push subscription endpoint available in remote push send options');
   }
-}
+  const endpoint = remotePushSendOption.pushSubscription.endpoint;
 
-async function broadcastToClients(data: any) {
-  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  console.log('[SW] Broadcasting to', clients.length, 'clients');
-  for (const client of clients) {
-    client.postMessage({
-      type: 'PUSH_RECEIVED',
-      payload: data,
+  const messageId = getRandomInt(1, 0xffffffff);
+  const total = Math.ceil(payloadString.length / 2048);
+  const chunks: chat.ChunkedChatMessagePayload[] = [];
+  for (let i = 0; i < total; i++) {
+    const chunkData = payloadString.slice(i * 2048, (i + 1) * 2048);
+    chunks.push({
+      t: 'c',
+      fr: localPushSendOption.id,
+      id: getRandomInt(1, 0xffffffff),
+      mid: messageId,
+      i,
+      all: total,
+      d: chunkData,
     });
   }
+
+  const { concurrency, jitterMs } = { concurrency: 3, jitterMs: 500 };
+
+  for (let i = 0; i < chunks.length; i += concurrency) {
+    const batch = chunks.slice(i, i + concurrency);
+    await Promise.all(
+      batch.map(async (chunk) => {
+        if (jitterMs > 0) {
+          await sleep(Math.random() * jitterMs);
+        }
+        const encrypted: EncryptWebPushResult = await encryptWebPush({
+          subscription: {
+            endpoint,
+            keys: {
+              auth: remotePushSendOption.messageEncryption.auth,
+              p256dh: remotePushSendOption.messageEncryption.p256dh,
+            },
+          },
+          vapidKeyPair: remotePushSendOption.vapidKeys,
+          payload: JSON.stringify(chunk),
+          contact: self.location.origin,
+          urgency: 'high',
+        });
+        return sendPushMessageWithRetry(encrypted, 3);
+      }),
+    );
+  }
 }
 
-async function processMessage(data: MessagePayload) {
-  let title = 'Baab Update';
-  let body = typeof data === 'string' ? data : 'New data received';
-  let shouldNotifyByType = true;
+const handleChatChunkedMessage = async (
+  chunkedPayload: chat.ChunkedChatMessagePayload,
+  chatStorageManager: ChatStorageManager,
+) => {
+  await chatStorageManager.receivedChunkedMessagesStorage.put(
+    await chatStorageManager.receivedChunkedMessagesStorage.generateId(),
+    chunkedPayload,
+  );
 
-  if (typeof data !== 'string' && typeof data === 'object') {
-    switch (data.type) {
-      case 'ASSET':
-        title = 'Baab - Asset received';
-        if (data.assetMode === 'image') {
-          body = 'Image ready to view in Baab.';
-        } else if (data.assetMode === 'directory') {
-          body = 'Folder ready to download in Baab.';
-        } else {
-          body = 'Message received in Baab.';
+  const allChunks = await chatStorageManager.receivedChunkedMessagesStorage.getAll();
+  const relevantChunks = allChunks.filter(
+    (chunk) => chunk.fr === chunkedPayload.fr && chunk.mid === chunkedPayload.mid,
+  );
+
+  broadcastDebugInfoToClients({ relevantChunksLength: relevantChunks.length, totalChunks: chunkedPayload.all });
+
+  if (relevantChunks.length === chunkedPayload.all) {
+    relevantChunks.sort((a, b) => a.i - b.i);
+    const fullDataBase64 = relevantChunks.map((chunk) => chunk.d).join('');
+    const parsedFullDataJson: chat.ChatMessagePayloadEnum = JSON.parse(fullDataBase64);
+    const reconstructedChatMessagePayload: chat.ChatMessagePayload = {
+      id: chunkedPayload.mid,
+      fullMessage: parsedFullDataJson,
+      from: chunkedPayload.fr,
+    };
+
+    const chatMessagePayload = chat.isChatMessagePayload(reconstructedChatMessagePayload)
+      ? reconstructedChatMessagePayload
+      : null;
+    if (!chatMessagePayload) {
+      broadcastDebugInfoToClients(
+        `Reconstructed chat message payload is invalid; payload: ${JSON.stringify(reconstructedChatMessagePayload)}`,
+      );
+      console.warn('Reconstructed chat message payload is invalid', reconstructedChatMessagePayload);
+      return;
+    }
+
+    await chatStorageManager.chatMessagesStorage.put(chatMessagePayload.id, chatMessagePayload);
+
+    for (const chunk of relevantChunks) {
+      await chatStorageManager.receivedChunkedMessagesStorage.delete(chunk.i);
+    }
+
+    const localPushSendOptions = await chatStorageManager.localPushSendStorage.getAll();
+
+    if (localPushSendOptions.length === 0) {
+      broadcastDebugInfoToClients('No local push send options stored; cannot respond to chat message');
+      console.warn('No local push send options stored; cannot respond to chat message', chatMessagePayload);
+      return;
+    }
+
+    switch (chatMessagePayload.fullMessage.t) {
+      case chat.ChatMessagePayloadType.GUEST_TO_HOST_HANDSHAKE:
+        const remotePushSendOption = chatMessagePayload.fullMessage.o;
+        await chatStorageManager.remotePushSendStorage.put(remotePushSendOption.id, remotePushSendOption);
+
+        const payload: chat.HandshakeAck = {
+          t: chat.ChatMessagePayloadType.HANDSHAKE_ACK,
+        };
+        const payloadString = JSON.stringify(payload);
+
+        await chunkAndSendChatMessage(
+          payloadString,
+          {
+            ...localPushSendOptions[0],
+            type: 'local',
+          },
+          remotePushSendOption,
+        );
+
+        if ((await hasVisibleClient()) === false) {
+          self.registration.showNotification('New user has joined the chat', {
+            data: { url: `/chat?peer=${remotePushSendOption.id}` },
+          });
         }
         break;
-      case 'ACK':
-        title = 'Baab - Delivery confirmed';
-        body = 'Receiver acknowledged the asset.';
+      case chat.ChatMessagePayloadType.HANDSHAKE_ACK:
+        if ((await hasVisibleClient()) === false) {
+          self.registration.showNotification('Join request accepted', {
+            data: { url: `/chat?peer=${chatMessagePayload.from}` },
+          });
+        }
         break;
-      case 'HANDSHAKE':
-        title = 'Baab - Client connected';
-        body = 'A receiver connected to your session.';
+      case chat.ChatMessagePayloadType.MESSAGE:
+        if ((await hasVisibleClient()) === false) {
+          self.registration.showNotification('New message', { data: { url: `/chat?peer=${chatMessagePayload.from}` } });
+        }
         break;
-      case 'CHUNK':
-        title = 'Baab - Receiving data';
-        body = `Chunk ${data.index !== undefined ? data.index + 1 : '?'} of ${data.total ?? '?'}`;
-        shouldNotifyByType = false; // avoid notifying for every chunk
-        break;
-      default:
-        title = 'Baab Update';
-        body = 'New data received';
     }
+
+    await broadcastToClients(chatMessagePayload.fullMessage);
+  }
+};
+
+async function chunkAndSendShareMessage(
+  payloadString: string,
+  localPushSendOption: share.ShareLocalPushSendOptions,
+  remotePushSendOption: share.ShareRemotePushSendOptions,
+): Promise<void> {
+  if (!remotePushSendOption.pushSubscription.endpoint) {
+    throw new Error('No push subscription endpoint available in remote push send options');
+  }
+  const endpoint = remotePushSendOption.pushSubscription.endpoint;
+
+  const messageId = getRandomInt(1, 0xffffffff);
+  const total = Math.ceil(payloadString.length / 2048);
+  const chunks: share.ChunkedShareMessagePayload[] = [];
+  for (let i = 0; i < total; i++) {
+    const chunkData = payloadString.slice(i * 2048, (i + 1) * 2048);
+    chunks.push({
+      t: 's',
+      fr: localPushSendOption.id,
+      id: getRandomInt(1, 0xffffffff),
+      mid: messageId,
+      i,
+      all: total,
+      d: chunkData,
+    });
   }
 
-  const options: NotificationOptions = {
-    body,
-    icon: '/vite.svg',
-    badge: '/vite.svg',
-    data: data,
-  };
+  const { concurrency, jitterMs } = { concurrency: 3, jitterMs: 500 };
 
-  // Handle Handshake in Background
-  const backgroundWork = async () => {
-    if (data.type === 'HANDSHAKE' && data.senderConfig) {
-      console.log('[SW] Handling Handshake in background');
-      await saveClient(data.senderConfig);
-      const asset = await getLatestAsset();
-      const assetMode = await dbGet('assets', 'latest-asset-mode');
-      console.log({ assetMode });
+  for (let i = 0; i < chunks.length; i += concurrency) {
+    const batch = chunks.slice(i, i + concurrency);
 
-      if (asset) {
-        const meta = assetMode === 'directory' ? await getLatestDirectoryMeta() : undefined;
-        await sendAckToClient(data.senderConfig, asset, assetMode as any, meta);
-      }
-    }
-  };
-
-  const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  const hasVisibleClient = windowClients.some((c) => c.visibilityState === 'visible');
-  const shouldNotify = !hasVisibleClient && shouldNotifyByType;
-
-  await Promise.all([
-    shouldNotify ? self.registration.showNotification(title, options) : Promise.resolve(),
-    broadcastToClients(data),
-    backgroundWork(),
-  ]);
+    await Promise.all(
+      batch.map(async (chunk) => {
+        if (jitterMs > 0) {
+          await sleep(Math.random() * jitterMs);
+        }
+        const encrypted: EncryptWebPushResult = await encryptWebPush({
+          subscription: {
+            endpoint,
+            keys: {
+              auth: remotePushSendOption.messageEncryption.auth,
+              p256dh: remotePushSendOption.messageEncryption.p256dh,
+            },
+          },
+          vapidKeyPair: remotePushSendOption.vapidKeys,
+          payload: JSON.stringify(chunk),
+          contact: self.location.origin,
+          urgency: 'high',
+        });
+        return sendPushMessageWithRetry(encrypted, 3);
+      }),
+    );
+  }
 }
 
-self.addEventListener('push', (event) => {
-  console.log('[SW] Push Received');
-  let data: any = {};
-  if (event.data) {
-    try {
-      data = event.data.json();
-      console.log('[SW] Parsed JSON:', data);
-    } catch (e) {
-      console.log('[SW] Push data not JSON', event.data.text());
-      data = { body: event.data.text() };
+const handleShareChunkedMessage = async (
+  chunkedPayload: share.ChunkedShareMessagePayload,
+  shareStorageManager: ShareStorageManager,
+) => {
+  await shareStorageManager.receivedChunkedMessagesStorage.put(getRandomInt(1, 0xffffffff), chunkedPayload);
+
+  const allChunks = await shareStorageManager.receivedChunkedMessagesStorage.getAll();
+  const relevantChunks = allChunks.filter(
+    (chunk) => chunk.fr === chunkedPayload.fr && chunk.mid === chunkedPayload.mid,
+  );
+
+  broadcastDebugInfoToClients({
+    relevantChunksLength: relevantChunks.length,
+    totalChunks: chunkedPayload.all,
+    relevantChunks,
+    allChunks,
+  });
+
+  if (relevantChunks.length === chunkedPayload.all) {
+    relevantChunks.sort((a, b) => a.i - b.i);
+    const fullDataBase64 = relevantChunks.map((chunk) => chunk.d).join('');
+    const parsedFullDataJson: share.ShareMessagePayloadEnum = JSON.parse(fullDataBase64);
+    const reconstructedShareMessagePayload: share.ShareMessagePayload = {
+      id: chunkedPayload.mid,
+      fullMessage: parsedFullDataJson,
+    };
+
+    const shareMessagePayload = share.isShareMessagePayload(reconstructedShareMessagePayload)
+      ? reconstructedShareMessagePayload
+      : null;
+    if (!shareMessagePayload) {
+      broadcastDebugInfoToClients(
+        `Reconstructed share message payload is invalid; payload: ${JSON.stringify(reconstructedShareMessagePayload)}`,
+      );
+      console.warn('Reconstructed share message payload is invalid', reconstructedShareMessagePayload);
+      return;
     }
+
+    for (const chunk of relevantChunks) {
+      await shareStorageManager.receivedChunkedMessagesStorage.delete(chunk.i);
+    }
+
+    const localPushSendOptions = await shareStorageManager.localPushSendStorage.getAll();
+
+    if (localPushSendOptions.length === 0) {
+      broadcastDebugInfoToClients('No local push send options stored; cannot respond to share message');
+      console.warn('No local push send options stored; cannot respond to share message', shareMessagePayload);
+      return;
+    }
+
+    switch (shareMessagePayload.fullMessage.t) {
+      case share.ShareMessagePayloadType.GUEST_TO_HOST_HANDSHAKE:
+        const remotePushSendOption = shareMessagePayload.fullMessage.o;
+        await shareStorageManager.remotePushSendStorage.put(remotePushSendOption.id, remotePushSendOption);
+
+        await chunkAndSendShareMessage(
+          JSON.stringify({
+            t: share.ShareMessagePayloadType.HANDSHAKE_ACK,
+          } satisfies share.HandshakeAck),
+          { ...localPushSendOptions[0], type: 'local' },
+          remotePushSendOption,
+        );
+        if ((await hasVisibleClient()) === false) {
+          self.registration.showNotification('New share request received', { data: { url: `/share` } });
+        }
+
+        const latestAsset = await shareStorageManager.latestAssetStorage.get(1);
+        if (latestAsset) {
+          await chunkAndSendShareMessage(
+            JSON.stringify({
+              t: share.ShareMessagePayloadType.ASSET_TRANSFER,
+              c: latestAsset.contentType,
+              d: latestAsset.contentBase64,
+            } satisfies share.AssetTransfer),
+            { ...localPushSendOptions[0], type: 'local' },
+            remotePushSendOption,
+          );
+        }
+        break;
+      case share.ShareMessagePayloadType.HANDSHAKE_ACK:
+        if ((await hasVisibleClient()) === false) {
+          self.registration.showNotification('Share request accepted', { data: { url: `/receive` } });
+        }
+        break;
+      case share.ShareMessagePayloadType.ASSET_TRANSFER:
+        if ((await hasVisibleClient()) === false) {
+          self.registration.showNotification('New asset received', { data: { url: `/receive` } });
+        }
+        break;
+    }
+
+    await broadcastToClients(shareMessagePayload.fullMessage);
+  }
+};
+
+self.addEventListener('push', (event) => {
+  broadcastDebugInfoToClients({ type: 'DEBUG', timestamp: Date.now(), eventData: event.data?.json() });
+  const chunkedMessage = event.data ? parsePushMessageData(event.data) : null;
+
+  if (!chunkedMessage) {
+    console.warn('Received push event with invalid or missing data');
+    return;
   }
 
   event.waitUntil(
     (async () => {
-      if (data.type === 'CHUNK') {
-        const chunkMeta = {
-          type: 'CHUNK',
-          id: data.id,
-          index: data.index,
-          total: data.total,
-        } as MessagePayload;
+      const chatStorageManager = await ChatStorageManager.createInstance();
+      const shareStorageManager = await ShareStorageManager.createInstance();
 
-        await broadcastToClients(chunkMeta);
-
-        const handleChunk = async () => {
-          await dbPut('chunks', `${data.id}_${data.index}`, data);
-          const allChunks = await dbGetAll('chunks');
-          const messageChunks = allChunks.filter((c) => c.id === data.id);
-
-          if (messageChunks.length === data.total) {
-            console.log('[SW] Reassembling chunks for', data.id);
-            messageChunks.sort((a, b) => a.index - b.index);
-            const fullPayloadStr = messageChunks.map((c) => c.data).join('');
-            let fullData;
-            try {
-              fullData = JSON.parse(fullPayloadStr);
-            } catch (e) {
-              console.error('[SW] Failed to parse reassembled payload', e);
-              self.registration.showNotification('Baab Error', { body: 'Failed to reassemble message' });
-              return;
-            }
-
-            // Cleanup
-            for (const c of messageChunks) {
-              await dbDelete('chunks', `${c.id}_${c.index}`);
-            }
-
-            await processMessage(fullData);
-          } else {
-            console.log(`[SW] Received chunk ${data.index + 1}/${data.total} for ${data.id}`);
+      if ((navigator as any).locks) {
+        const lockId = `chunk-${chunkedMessage.id}`;
+        await (navigator as any).locks.request(lockId, async () => {
+          if (chat.isChunkedChatMessagePayload(chunkedMessage)) {
+            await handleChatChunkedMessage(chunkedMessage, chatStorageManager);
+          } else if (share.isChunkedShareMessagePayload(chunkedMessage)) {
+            await handleShareChunkedMessage(chunkedMessage, shareStorageManager);
           }
-        };
-
-        if ((navigator as any).locks) {
-          await (navigator as any).locks.request(`chunk-${data.id}`, handleChunk);
-        } else {
-          await handleChunk();
-        }
+        });
       } else {
-        await processMessage(data);
+        if (chat.isChunkedChatMessagePayload(chunkedMessage)) {
+          await handleChatChunkedMessage(chunkedMessage, chatStorageManager);
+        } else if (share.isChunkedShareMessagePayload(chunkedMessage)) {
+          await handleShareChunkedMessage(chunkedMessage, shareStorageManager);
+        }
       }
     })(),
   );
+});
+
+self.addEventListener('message', (event) => {
+  const msg = event.data;
+  if (!msg || !msg.type) return;
+
+  if (msg.type === 'CHAT_SEND') {
+    event.waitUntil(
+      (async () => {
+        await chunkAndSendChatMessage(msg.payloadString, msg.localPushSendOption, msg.remotePushSendOption);
+      })(),
+    );
+  } else if (msg.type === 'SHARE_SEND') {
+    event.waitUntil(
+      (async () => {
+        await chunkAndSendShareMessage(msg.payloadString, msg.localPushSendOption, msg.remotePushSendOption);
+      })(),
+    );
+  }
 });
 
 self.addEventListener('notificationclick', (event) => {
@@ -343,13 +471,16 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil(
     self.clients.matchAll({ type: 'window' }).then((clients) => {
       if (clients.length) {
-        clients[0].focus();
+        for (const client of clients) {
+          if (client.url.includes(event.notification.data.url || '/')) {
+            return client.focus();
+          }
+        }
       } else {
-        self.clients.openWindow('/');
+        self.clients.openWindow(event.notification.data.url || '/');
       }
     }),
   );
 });
 
-// Make sure to export something or treat as module
 export {};

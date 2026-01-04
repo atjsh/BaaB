@@ -1,77 +1,40 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
 import { decompress } from 'lz-string';
-import { deserializeVapidKeys } from 'web-push-browser';
-import { dbGet, dbPut } from '../lib/db';
-import { arrayBufferToBase64Url, encryptWebPush } from '../lib/web-push-encryption';
-import type { DirectoryManifestEntry, MessagePayload, RemoteConfig, VapidKeys } from '@baab/shared';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
 
-const PROXY_URL = import.meta.env.VITE_PROXY_URL;
-const VAPID_SUBJECT = import.meta.env.VITE_VAPID_SUBJECT ?? `https://${window.location.host}`;
-const DEFAULT_CHUNK_CONCURRENCY = 2;
-const DEFAULT_CHUNK_JITTER_MS = 80;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const dataUrlBytes = (dataUrl: string) => {
-  try {
-    const base64 = dataUrl.split(',')[1] || '';
-    return Math.floor((base64.length * 3) / 4);
-  } catch {
-    return 0;
-  }
-};
+import { share } from '@baab/shared';
+
+import { ShareStorageManager } from '../lib/storage/share.db';
 
 interface UseBaabClientProps {
-  vapidKeys: VapidKeys | null;
-  setVapidKeys: (keys: VapidKeys | null) => void;
-  subscription: PushSubscription | null;
-  setSubscription: (sub: PushSubscription | null) => void;
   addLog: (msg: string) => void;
-  ensureKeysAndSubscription: (opts?: {
-    vapidKeysOverride?: VapidKeys;
-  }) => Promise<{ keys: VapidKeys | null; sub: PushSubscription | null }>;
-  resetBaab: () => Promise<void>;
 }
 
-export function useBaabClient({
-  setVapidKeys,
-  setSubscription,
-  addLog,
-  ensureKeysAndSubscription,
-  resetBaab,
-}: UseBaabClientProps) {
+export function useBaabClient({ addLog }: UseBaabClientProps) {
+  const [localPushSubscription, setLocalPushSubscription] = useState<PushSubscription | null>(null);
+  const [localPushSend, setLocalPushSendOption] = useState<share.ShareLocalPushSendOptions | null>(null);
+  const [isShareStorageReady, setIsShareStorageReady] = useState(false);
+  const [shareStorage, setSharedStorage] = useState<ShareStorageManager>();
+  useEffect(() => {
+    ShareStorageManager.createInstance().then((instance) => {
+      setSharedStorage(instance);
+      setIsShareStorageReady(true);
+    });
+  }, []);
   const initializedRef = useRef(false);
-  const seenPayloadsRef = useRef<Set<string>>(new Set());
-  const [serverConfig, setServerConfig] = useState<RemoteConfig | null>(null);
+  const [serverConfig, setServerConfig] = useState<share.ShareRemotePushSendOptions | null>(null);
   const [receivedAssets, setReceivedAssets] = useState<
-    (
-      | { type: 'text'; content: string }
-      | { type: 'image'; content: string }
-      | {
-          type: 'directory';
-          content: string;
-          manifest?: DirectoryManifestEntry[];
-          directoryName?: string;
-          totalBytes?: number;
-          fileCount?: number;
-        }
-    )[]
+    ({ type: 'text'; content: string } | { type: 'image'; content: string })[]
   >([]);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connecting' | 'connected'>('idle');
-  const [chunkConcurrency, setChunkConcurrency] = useState<number>(DEFAULT_CHUNK_CONCURRENCY);
-  const [chunkJitterMs, setChunkJitterMs] = useState<number>(DEFAULT_CHUNK_JITTER_MS);
-  const [lastReceiveBytes, setLastReceiveBytes] = useState<number | null>(null);
-  const [lastReceiveMs, setLastReceiveMs] = useState<number | null>(null);
-
-  // Chunk reassembly state
-  const chunksRef = useRef<Map<string, { total: number; parts: Map<number, string> }>>(new Map());
-  const chunkStartRef = useRef<number | null>(null);
 
   const handleConnectData = useCallback(
-    (connectData: string) => {
+    async (connectData: string) => {
       if (connectionStatus !== 'idle') return;
       try {
         const config = JSON.parse(atob(decodeURIComponent(connectData)));
         setServerConfig(config);
-        dbPut('config', 'server-config', config);
+        await (await ShareStorageManager.createInstance()).remotePushSendStorage.put(config.id, config);
         addLog('Server configuration loaded');
         setConnectionStatus('connecting');
       } catch (e) {
@@ -79,276 +42,238 @@ export function useBaabClient({
         console.error(e);
       }
     },
-    [addLog, connectionStatus],
+    [connectionStatus, isShareStorageReady],
   );
 
   // Load existing keys and subscription on mount
   useEffect(() => {
+    if (!isShareStorageReady) return;
     if (initializedRef.current) return;
     initializedRef.current = true;
     const init = async () => {
-      // Load existing keys from IndexedDB
-      const storedKeys = await dbGet('config', 'vapid-keys');
-      if (storedKeys) {
-        setVapidKeys(storedKeys);
-      }
+      console.log({ ran: true });
 
-      const storedConcurrency = await dbGet('config', 'chunk-concurrency');
-      if (typeof storedConcurrency === 'number' && storedConcurrency > 0) {
-        setChunkConcurrency(storedConcurrency);
-      }
+      const remotePushSendConfigs = await shareStorage?.remotePushSendStorage.getAll();
+      if (remotePushSendConfigs && remotePushSendConfigs.length > 0) {
+        const config = remotePushSendConfigs[0];
+        setServerConfig({
+          ...config,
+          type: 'remote',
+        });
+        addLog('Restored server configuration from storage');
+      } else {
+        if ('serviceWorker' in navigator) {
+          const registration = await navigator.serviceWorker.ready;
+          const sub = await registration.pushManager.getSubscription();
+          if (sub) {
+            setLocalPushSubscription(sub);
+            const localPushSendId = crypto.randomUUID();
+            alert(`The localPushSendId is ${localPushSendId}`);
+            const vapidKeys = await serializeVapidKeys(await generateVapidKeys());
 
-      const storedJitter = await dbGet('config', 'chunk-jitter-ms');
-      if (typeof storedJitter === 'number' && storedJitter >= 0) {
-        setChunkJitterMs(storedJitter);
-      }
+            // const p256dh = sub.getKey('p256dh');
+            // const auth = sub.getKey('auth');
 
-      // Check subscription
-      if ('serviceWorker' in navigator) {
-        const registration = await navigator.serviceWorker.ready;
-        const sub = await registration.pushManager.getSubscription();
-        if (sub) {
-          setSubscription(sub);
-          addLog('Found existing subscription');
+            // if (!p256dh) {
+            //   addLog('Subscription keys are missing');
+            //   return;
+            // }
+
+            // if (!auth) {
+            //   addLog('Subscription auth key is missing');
+            //   return;
+            // }
+
+            const subjsonString = JSON.stringify(sub);
+            const subjson = JSON.parse(subjsonString);
+
+            const p256dh = subjson.keys.p256dh;
+            const auth = subjson.keys.auth;
+
+            await shareStorage?.localPushSendStorage.put(localPushSendId, {
+              id: localPushSendId,
+              messageEncryption: {
+                encoding: PushManager.supportedContentEncodings[0],
+                p256dh: p256dh,
+                auth: auth,
+              },
+              pushSubscription: {
+                endpoint: sub.endpoint,
+                expirationTime: sub.expirationTime,
+              },
+              vapidKeys,
+            });
+            addLog('Found existing subscription');
+          }
         }
       }
-
-      const storedConfig = await dbGet('config', 'server-config');
-      if (storedConfig) {
-        setServerConfig(storedConfig);
-        addLog('Restored server configuration from storage');
-        setConnectionStatus('connecting');
-      }
+      setConnectionStatus('connecting');
     };
     init();
-  }, [addLog, setVapidKeys, setSubscription]);
-
-  const sendMessage = async (targetConfig: RemoteConfig, payload: MessagePayload) => {
-    try {
-      const vapidKeyPair = await deserializeVapidKeys(targetConfig.vapidKeys);
-
-      const send = async (p: MessagePayload) => {
-        const sub = targetConfig.subscription;
-        if (!sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
-          throw new Error('Invalid subscription data');
-        }
-
-        const encrypted = await encryptWebPush({
-          subscription: {
-            endpoint: sub.endpoint,
-            keys: {
-              p256dh: sub.keys.p256dh,
-              auth: sub.keys.auth,
-            },
-          },
-          vapidKeyPair,
-          payload: JSON.stringify(p),
-          contact: VAPID_SUBJECT,
-        });
-
-        const response = await fetch(PROXY_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            endpoint: encrypted.endpoint,
-            body: arrayBufferToBase64Url(encrypted.body),
-            headers: encrypted.headers,
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error(await response.text());
-        }
-        return true;
-      };
-
-      // For client -> server, we usually just send small handshake messages,
-      // but we keep the chunking logic just in case.
-      const payloadStr = JSON.stringify(payload);
-      const MAX_CHUNK_SIZE = 2048;
-      const concurrency = Math.max(1, chunkConcurrency || DEFAULT_CHUNK_CONCURRENCY);
-      const jitterMs = Math.max(0, chunkJitterMs || 0);
-
-      if (payloadStr.length <= MAX_CHUNK_SIZE) {
-        return await send(payload);
-      } else {
-        const id = crypto.randomUUID();
-        const total = Math.ceil(payloadStr.length / MAX_CHUNK_SIZE);
-        const chunkPayloads: MessagePayload[] = Array.from({ length: total }).map((_, i) => ({
-          type: 'CHUNK',
-          id,
-          index: i,
-          total,
-          data: payloadStr.slice(i * MAX_CHUNK_SIZE, (i + 1) * MAX_CHUNK_SIZE),
-        }));
-
-        for (let i = 0; i < chunkPayloads.length; i += concurrency) {
-          const batch = chunkPayloads.slice(i, i + concurrency);
-          await Promise.all(
-            batch.map(async (chunk) => {
-              if (jitterMs > 0) {
-                await sleep(Math.random() * jitterMs);
-              }
-              return send(chunk);
-            }),
-          );
-        }
-        return true;
-      }
-    } catch (e: any) {
-      addLog(`Error sending message: ${e.message}`);
-      return false;
-    }
-  };
+  }, [isShareStorageReady]);
 
   const connectToServer = async () => {
     if (!serverConfig) return;
-    try {
-      // Subscribe using server's VAPID public key to avoid VAPID mismatch
-      const { keys, sub } = await ensureKeysAndSubscription({ vapidKeysOverride: serverConfig.vapidKeys });
 
-      // Send Handshake
-      await sendMessage(serverConfig, {
-        type: 'HANDSHAKE',
-        senderConfig: { subscription: sub!.toJSON(), vapidKeys: keys! },
+    const localPushSends = await shareStorage?.localPushSendStorage.getAll();
+    if (!localPushSends || localPushSends.length === 0) {
+      let readyReg: ServiceWorkerRegistration | null = null;
+      try {
+        readyReg = await navigator.serviceWorker.ready;
+      } catch (e) {
+        addLog('Service worker not ready. Is PWA registration running?');
+        throw e;
+      }
+
+      let sub = await readyReg.pushManager.getSubscription();
+
+      console.log({ sub });
+
+      if (!sub) {
+        const localPushSendId = crypto.randomUUID();
+        alert(`The localPushSendId is ${localPushSendId}`);
+        const vapidKeys = await serializeVapidKeys(await generateVapidKeys());
+
+        sub = await readyReg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: fromBase64Url(vapidKeys.publicKey),
+        });
+
+        setLocalPushSubscription(sub);
+
+        const localPushSendEntry = {
+          id: localPushSendId,
+          messageEncryption: {
+            encoding: PushManager.supportedContentEncodings[0],
+            p256dh: btoa(String.fromCharCode(...new Uint8Array(sub.getKey('p256dh')!))),
+            auth: btoa(String.fromCharCode(...new Uint8Array(sub.getKey('auth')!))),
+          },
+          pushSubscription: {
+            endpoint: sub.endpoint,
+            expirationTime: sub.expirationTime,
+          },
+          vapidKeys,
+        };
+
+        await navigator.serviceWorker.ready;
+        const sw = navigator.serviceWorker.controller;
+        if (sw) {
+          sw.postMessage({
+            type: 'SHARE_SEND',
+            payloadString: JSON.stringify({
+              t: share.ShareMessagePayloadType.GUEST_TO_HOST_HANDSHAKE,
+              o: {
+                type: 'remote',
+                id: localPushSendEntry.id,
+                messageEncryption: localPushSendEntry.messageEncryption,
+                pushSubscription: localPushSendEntry.pushSubscription,
+                vapidKeys: localPushSendEntry.vapidKeys,
+              },
+            } satisfies share.GuestToHostHandshake),
+            remotePushSendOption: {
+              ...serverConfig,
+            } satisfies share.ShareRemotePushSendOptions,
+            localPushSendOption: {
+              ...localPushSendEntry,
+              type: 'local',
+            } satisfies share.ShareLocalPushSendOptions,
+          });
+        } else {
+          addLog('No active Service Worker controller found');
+        }
+
+        await shareStorage?.localPushSendStorage.put(localPushSendId, localPushSendEntry);
+        addLog('Subscribed to push notifications');
+      }
+
+      setLocalPushSubscription(sub);
+
+      shareStorage?.localPushSendStorage.getAll().then((all) => {
+        if (all.length > 0) {
+          setLocalPushSendOption({
+            ...all[0],
+            type: 'local',
+          });
+        }
       });
-      addLog('Sent handshake to server');
-      setConnectionStatus('connected');
-    } catch (e) {
-      addLog('Failed to connect');
-      setConnectionStatus('idle');
-      console.error(e);
+    } else {
+      setLocalPushSendOption({
+        ...localPushSends[0],
+        type: 'local',
+      });
+
+      await navigator.serviceWorker.ready;
+      const sw = navigator.serviceWorker.controller;
+      if (sw) {
+        sw.postMessage({
+          type: 'SHARE_SEND',
+          payloadString: JSON.stringify({
+            t: share.ShareMessagePayloadType.GUEST_TO_HOST_HANDSHAKE,
+            o: {
+              type: 'remote',
+              id: localPushSends[0].id,
+              messageEncryption: localPushSends[0].messageEncryption,
+              pushSubscription: localPushSends[0].pushSubscription,
+              vapidKeys: localPushSends[0].vapidKeys,
+            },
+          } satisfies share.GuestToHostHandshake),
+          remotePushSendOption: {
+            ...serverConfig,
+          } satisfies share.ShareRemotePushSendOptions,
+          localPushSendOption: {
+            ...localPushSends[0],
+            type: 'local',
+          } satisfies share.ShareLocalPushSendOptions,
+        });
+      } else {
+        addLog('No active Service Worker controller found');
+      }
     }
   };
 
   // Trigger connection when status is connecting
   useEffect(() => {
-    if (connectionStatus === 'connecting' && serverConfig) {
+    if (connectionStatus === 'connecting' && serverConfig && isShareStorageReady) {
       connectToServer();
     }
-  }, [connectionStatus, serverConfig]);
+  }, [connectionStatus, serverConfig, isShareStorageReady]);
 
   const processMessage = useCallback(
-    (data: MessagePayload) => {
-      const dedupeKey = JSON.stringify(data);
-      if (seenPayloadsRef.current.has(dedupeKey)) {
-        return;
-      }
-      seenPayloadsRef.current.add(dedupeKey);
+    (data: share.ShareMessagePayloadEnum) => {
+      console.log({ 'data.t': data.t });
 
-      const { asset } = data;
+      switch (data.t) {
+        case share.ShareMessagePayloadType.HANDSHAKE_ACK:
+          addLog('Received HANDSHAKE_ACK from server');
+          setConnectionStatus('connected');
+          break;
+        case share.ShareMessagePayloadType.ASSET_TRANSFER:
+          {
+            addLog('Received ASSET_TRANSFER message');
 
-      if (data.type === 'ASSET' && asset !== undefined) {
-        addLog('Received ASSET');
-        const mode = data.assetMode || 'text';
-        const sizeBytes = (() => {
-          if (mode === 'directory') {
-            if (typeof data.totalBytes === 'number' && data.totalBytes > 0) return data.totalBytes;
-            return dataUrlBytes(asset);
+            const { d: assetPayload, c: contentType } = data;
+
+            // original text serialization from the server:
+            // btoa(unescape(encodeURIComponent(decompress(assetPayload))))
+
+            const content = contentType === 'plain/text' ? decompress(assetPayload) : assetPayload;
+
+            setReceivedAssets((prev) => [{ type: contentType === 'plain/text' ? 'text' : 'image', content }, ...prev]);
           }
-          if (mode === 'image') {
-            return dataUrlBytes(asset);
-          }
-          return new TextEncoder().encode(asset).length;
-        })();
-        const start = chunkStartRef.current ?? performance.now();
-        const end = performance.now();
-        const durationMs = Math.max(1, end - start);
-        setLastReceiveBytes(sizeBytes);
-        setLastReceiveMs(durationMs);
-        chunkStartRef.current = null;
-
-        const content = mode === 'text' ? decompress(asset) : asset;
-        if (mode === 'directory') {
-          setReceivedAssets((prev) => [
-            {
-              type: 'directory',
-              content,
-              manifest: data.manifest,
-              directoryName: data.directoryName,
-              totalBytes: data.totalBytes,
-              fileCount: data.fileCount,
-            },
-            ...prev,
-          ]);
-        } else {
-          setReceivedAssets((prev) => [{ type: mode as 'text' | 'image', content }, ...prev]);
-        }
-      } else if (data.type === 'ACK') {
-        addLog('Received ACK');
-        if (asset) {
-          addLog('Received ASSET with ACK');
-          const mode = data.assetMode || 'text';
-          const sizeBytes = (() => {
-            if (mode === 'directory') {
-              if (typeof data.totalBytes === 'number' && data.totalBytes > 0) return data.totalBytes;
-              return dataUrlBytes(asset);
-            }
-            if (mode === 'image') {
-              return dataUrlBytes(asset);
-            }
-            return new TextEncoder().encode(asset).length;
-          })();
-          const start = chunkStartRef.current ?? performance.now();
-          const end = performance.now();
-          const durationMs = Math.max(1, end - start);
-          setLastReceiveBytes(sizeBytes);
-          setLastReceiveMs(durationMs);
-          chunkStartRef.current = null;
-
-          const content = mode === 'text' ? decompress(asset) : asset;
-          if (mode === 'directory') {
-            setReceivedAssets((prev) => [
-              {
-                type: 'directory',
-                content,
-                manifest: data.manifest,
-                directoryName: data.directoryName,
-                totalBytes: data.totalBytes,
-                fileCount: data.fileCount,
-              },
-              ...prev,
-            ]);
-          } else {
-            setReceivedAssets((prev) => [{ type: mode as 'text' | 'image', content }, ...prev]);
-          }
-        }
+          break;
+        default:
+          addLog(`Received unhandled message type: ${data.t}`);
+          break;
       }
     },
-    [addLog],
+    [isShareStorageReady],
   );
 
   const handleIncomingMessage = useCallback(
-    (payload: any) => {
+    (payload: share.ShareMessagePayloadEnum) => {
       console.log('[Receive] handleIncomingMessage payload:', payload);
-      let data: MessagePayload;
-      try {
-        data = typeof payload === 'string' ? JSON.parse(payload) : payload;
-        if (payload.body && typeof payload.body === 'string') {
-          try {
-            data = JSON.parse(payload.body);
-          } catch {
-            addLog(`Received raw text: ${payload.body}`);
-            return;
-          }
-        }
-      } catch (e) {
-        console.error('[Receive] Error parsing message:', e);
-        return;
-      }
 
-      if (data.type === 'CHUNK') {
-        const idx = data.index !== undefined ? data.index + 1 : '?';
-        const total = data.total ?? '?';
-        addLog(`Received CHUNK ${idx}/${total}`);
-        if (chunkStartRef.current === null) {
-          chunkStartRef.current = performance.now();
-        }
-        // Let Service Worker handle chunk reassembly; ignore chunk messages in page
-        return;
-      } else {
-        processMessage(data);
-      }
+      processMessage(payload);
     },
     [addLog, processMessage],
   );
@@ -358,8 +283,7 @@ export function useBaabClient({
     const handler = (event: MessageEvent) => {
       console.log('[Receive] SW Message:', event.data);
       if (event.data && event.data.type === 'PUSH_RECEIVED') {
-        const payload = event.data.payload;
-        handleIncomingMessage(payload);
+        handleIncomingMessage(event.data.payload);
       }
     };
     navigator.serviceWorker.addEventListener('message', handler);
@@ -367,12 +291,23 @@ export function useBaabClient({
   }, [handleIncomingMessage]);
 
   const resetClient = async () => {
-    await resetBaab();
     setServerConfig(null);
     setReceivedAssets([]);
     setConnectionStatus('idle');
-    chunksRef.current.clear();
+    await shareStorage?.remotePushSendStorage.clear();
+    await shareStorage?.localPushSendStorage.clear();
+    await shareStorage?.receivedChunkedMessagesStorage.clear();
+    await shareStorage?.latestAssetStorage.clear();
+    // unregister service worker
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    for (const registration of registrations) {
+      await registration.unregister();
+    }
     addLog('Reset connection and cleared data');
+    if (localPushSubscription) {
+      localPushSubscription.unsubscribe();
+      setLocalPushSubscription(null);
+    }
   };
 
   return {
@@ -381,9 +316,5 @@ export function useBaabClient({
     connectionStatus,
     handleConnectData,
     resetClient,
-    chunkConcurrency,
-    chunkJitterMs,
-    lastReceiveBytes,
-    lastReceiveMs,
   };
 }

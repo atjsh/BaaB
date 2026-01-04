@@ -5,11 +5,6 @@ export const Route = createFileRoute('/')({
   head: () => ({
     meta: [
       {
-        name: 'description',
-        content:
-          'BaaB (Browser as a Backend) is a somewhat modern P2P  application that leverages web technologies to enable direct browser-to-browser communication.',
-      },
-      {
         title: 'Welcome - BaaB',
       },
     ],
@@ -18,30 +13,38 @@ export const Route = createFileRoute('/')({
 
 function Index() {
   return (
-    <main className="p-2 max-w-md">
-      <h2 className="text-2xl font-bold mb-4">Welcome to BaaB</h2>
-      <div className="flex flex-col gap-4">
-        <p>
-          <b>BaaB (Browser as a Backend)</b> is a somewhat modern P2P application that leverages web technologies to
-          enable direct browser-to-browser communication.
-        </p>
-        <p>
-          We relay data directly to the recipient's browser with browser notifications. The data are end-to-end
-          encrypted, ensuring that only the intended recipient can access them. Even the relay server cannot decrypt the
-          data.
-        </p>
-        <p>
-          To get started, choose to either{' '}
-          <Link to="/share" className="text-blue-500 underline md:no-underline hover:underline">
-            Share
-          </Link>{' '}
-          or{' '}
-          <Link to="/receive" className="text-blue-500 underline md:no-underline hover:underline">
-            Receive
-          </Link>
-          .
-        </p>
-        <p>(Note: This is an experimental project and may not be suitable for production use. Use at your own risk.)</p>
+    <main className="p-5 max-w-md">
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-4">
+          <h2 className=" text-xl font-bold">
+            End-to-End Encrypted Communication Between Web Browsers Using Web Push API
+          </h2>
+          <ul className="list-inside">
+            <li className="list-['\1F512_']"> Secure. Only the intended recipients can decrypt and read messages.</li>
+            <li className="list-['\1F4AC_']">
+              {' '}
+              Censorship Resistant. BaaB uses web browser's push services, making it hard to block.
+            </li>
+            <li className="list-['\26A1_']">
+              {' '}
+              Instant. No sign-up required. You can host, join and leave sessions anytime.
+            </li>
+          </ul>
+          <p>Try it out:</p>
+          <ul className=" flex flex-row gap-4 list-none p-0 m-0">
+            <li>
+              <Link to="/share" className="underline">
+                Share Images and Files
+              </Link>
+            </li>
+            <li>or</li>
+            <li>
+              <Link to="/chat" className="underline">
+                New Chat
+              </Link>
+            </li>
+          </ul>
+        </div>
       </div>
     </main>
   );

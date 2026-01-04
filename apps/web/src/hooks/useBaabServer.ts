@@ -1,139 +1,49 @@
-import { useCallback, useEffect, useState } from 'react';
 import { compress, decompress } from 'lz-string';
-import { deserializeVapidKeys } from 'web-push-browser';
-import { dbDelete, dbGet, dbGetAll, dbPut } from '../lib/db';
-import { arrayBufferToBase64Url, encryptWebPush } from '../lib/web-push-encryption';
-import type { DirectoryAsset } from '../types/assets';
-import type { MessagePayload, RemoteConfig, VapidKeys } from '@baab/shared';
+import { use, useCallback, useEffect, useState } from 'react';
+import { fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
 
-const PROXY_URL = import.meta.env.VITE_PROXY_URL;
-// Prefer explicit VAPID subject; fall back to host if production, or a safe mailto on localhost.
-const VAPID_SUBJECT =
-  import.meta.env.VITE_VAPID_SUBJECT ||
-  (window.location.hostname === 'localhost' ? 'mailto:baab@example.com' : `https://${window.location.host}`);
-const DEFAULT_CHUNK_CONCURRENCY = 2;
-const DEFAULT_CHUNK_JITTER_MS = 80;
+import { share } from '@baab/shared';
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const bytesToHuman = (bytes: number) => {
-  if (!bytes || bytes < 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / Math.pow(1024, idx);
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[idx]}`;
-};
-const bpsToHuman = (bps: number) => {
-  if (!bps || bps < 0) return '0 B/s';
-  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-  const idx = Math.min(Math.floor(Math.log(bps) / Math.log(1024)), units.length - 1);
-  const value = bps / Math.pow(1024, idx);
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[idx]}`;
-};
-const dataUrlBytes = (dataUrl: string) => {
-  try {
-    const base64 = dataUrl.split(',')[1] || '';
-    return Math.floor((base64.length * 3) / 4);
-  } catch {
-    return 0;
-  }
-};
+import { ShareStorageManager } from '../lib/storage/share.db';
 
 interface UseBaabServerProps {
-  vapidKeys: VapidKeys | null;
-  setVapidKeys: (keys: VapidKeys | null) => void;
-  subscription: PushSubscription | null;
-  setSubscription: (sub: PushSubscription | null) => void;
   addLog: (msg: string) => void;
-  ensureKeysAndSubscription: () => Promise<{ keys: VapidKeys | null; sub: PushSubscription | null }>;
-  resetBaab: () => Promise<void>;
 }
 
-export function useBaabServer({
-  vapidKeys,
-  setVapidKeys,
-  setSubscription,
-  addLog,
-  ensureKeysAndSubscription,
-  resetBaab,
-}: UseBaabServerProps) {
+export function useBaabServer({ addLog }: UseBaabServerProps) {
+  const [localPushSubscription, setLocalPushSubscription] = useState<PushSubscription | null>(null);
+  const [isShareStorageReady, setIsShareStorageReady] = useState(false);
+  const [shareStorage, setSharedStorage] = useState<ShareStorageManager>();
+  useEffect(() => {
+    ShareStorageManager.createInstance().then((instance) => {
+      setSharedStorage(instance);
+      setIsShareStorageReady(true);
+    });
+  }, []);
   const [isServerStarted, setIsServerStarted] = useState(false);
+  const [localPushSendOption, setLocalPushSendOption] = useState<share.ShareLocalPushSendOptions | null>(null);
   const [isBroadcasting, setIsBroadcasting] = useState(false);
 
-  // Server State
-  const [clients, setClients] = useState<RemoteConfig[]>([]);
+  const [clients, setClients] = useState<share.ShareRemotePushSendOptions[]>([]);
   const [assetMode, setAssetMode] = useState<'text' | 'image' | 'directory'>('text');
   const [assetText, setAssetText] = useState('');
   const [compressedAssetText, setCompressedAssetText] = useState('');
   const [imageAsset, setImageAsset] = useState<string>('');
-  const [directoryAsset, setDirectoryAsset] = useState<DirectoryAsset | null>(null);
-  const [chunkConcurrency, setChunkConcurrency] = useState<number>(DEFAULT_CHUNK_CONCURRENCY);
-  const [chunkJitterMs, setChunkJitterMs] = useState<number>(DEFAULT_CHUNK_JITTER_MS);
-  const [lastBroadcastBytes, setLastBroadcastBytes] = useState<number | null>(null);
-  const [lastBroadcastMs, setLastBroadcastMs] = useState<number | null>(null);
+  const [directoryAsset, setDirectoryAsset] = useState<any | null>(null);
 
-  const updateChunkConcurrency = useCallback(
-    async (value: number) => {
-      const normalized = Math.min(5, Math.max(1, Math.round(value)));
-      setChunkConcurrency(normalized);
-      await dbPut('config', 'chunk-concurrency', normalized);
-      addLog(`Chunk concurrency set to ${normalized}`);
-    },
-    [addLog],
-  );
-
-  const updateChunkJitterMs = useCallback(
-    async (value: number) => {
-      const normalized = Math.min(500, Math.max(0, Math.round(value)));
-      setChunkJitterMs(normalized);
-      await dbPut('config', 'chunk-jitter-ms', normalized);
-      addLog(`Chunk jitter set to ${normalized} ms`);
-    },
-    [addLog],
-  );
-
-  // Load current asset from cache on mount
   useEffect(() => {
-    if (!assetText) {
-      dbGet('assets', 'latest-asset-mode').then((mode) => {
-        if (mode === 'image') {
-          setAssetMode('image');
-          dbGet('assets', 'latest-asset').then((data) => {
-            if (data) {
-              setImageAsset(data);
-            }
-          });
-        } else if (mode === 'directory') {
-          setAssetMode('directory');
-          Promise.all([
-            dbGet('assets', 'latest-asset'),
-            dbGet('assets', 'latest-asset-manifest'),
-            dbGet('assets', 'latest-asset-dirname'),
-            dbGet('assets', 'latest-asset-bytes'),
-            dbGet('assets', 'latest-asset-filecount'),
-          ]).then(([zipDataUrl, manifest, dirname, bytes, fileCount]) => {
-            if (zipDataUrl && manifest) {
-              setDirectoryAsset({
-                zipDataUrl,
-                manifest,
-                directoryName: dirname || 'shared-folder',
-                totalBytes: typeof bytes === 'number' ? bytes : 0,
-                fileCount: typeof fileCount === 'number' ? fileCount : (manifest as any[]).length,
-              });
-            }
-          });
-        } else {
+    shareStorage?.latestAssetStorage.get(1).then((asset) => {
+      if (asset) {
+        if (asset.contentType === 'plain/text') {
           setAssetMode('text');
-          dbGet('assets', 'latest-asset').then((text) => {
-            if (text) {
-              setAssetText((prev) => prev || decompress(text));
-            } else {
-              setAssetText('This is a secret message!');
-            }
-          });
+          setAssetText(decompress(asset.contentBase64));
+        } else if (asset.contentType === 'image/webp') {
+          setAssetMode('image');
+          setImageAsset(asset.contentBase64);
         }
-      });
-    }
-  }, []);
+      }
+    });
+  }, [isShareStorageReady]);
 
   useEffect(() => {
     setCompressedAssetText(compress(assetText));
@@ -142,107 +52,120 @@ export function useBaabServer({
   // Load clients from cache when server is started
   useEffect(() => {
     if (isServerStarted) {
-      dbGetAll('clients').then((loadedClients) => {
-        const validClients = loadedClients.filter((c): c is RemoteConfig => c !== null);
+      shareStorage?.remotePushSendStorage.getAll().then((loadedClients) => {
         setClients((prev) => {
-          // Merge with existing, avoiding duplicates
-          const existingEndpoints = new Set(prev.map((c) => c.subscription.endpoint));
-          const newClients = validClients.filter((c) => !existingEndpoints.has(c.subscription.endpoint));
-          return [...prev, ...newClients];
+          const existingEndpoints = new Set(prev.map((c) => c.id));
+          const newClients = loadedClients.filter((c) => !existingEndpoints.has(c.id));
+          return [
+            ...prev,
+            ...newClients.map((c) => ({ ...c, type: 'remote' }) satisfies share.ShareRemotePushSendOptions),
+          ];
         });
-        if (validClients.length > 0) {
-          addLog(`Restored ${validClients.length} clients from storage`);
+        if (loadedClients.length > 0) {
+          addLog(`Restored ${loadedClients.length} clients from storage`);
         }
       });
     }
-  }, [isServerStarted, addLog]);
+  }, [isServerStarted, isShareStorageReady]);
 
   // Initialize
   useEffect(() => {
     const init = async () => {
       // Restore server state from IndexedDB
-      const storedMode = await dbGet('config', 'mode');
-      if (storedMode === 'server') {
+      const latestAsset = await shareStorage?.latestAssetStorage.get(1);
+      if (latestAsset) {
         setIsServerStarted(true);
         addLog('Restored Server mode');
       }
 
-      // Load existing keys
-      const storedKeys = await dbGet('config', 'vapid-keys');
-      if (storedKeys) {
-        setVapidKeys(storedKeys);
-      }
-
-      // Load delivery tuning
-      const storedConcurrency = await dbGet('config', 'chunk-concurrency');
-      if (typeof storedConcurrency === 'number' && storedConcurrency > 0) {
-        setChunkConcurrency(storedConcurrency);
-      } else {
-        await dbPut('config', 'chunk-concurrency', DEFAULT_CHUNK_CONCURRENCY);
-      }
-
-      const storedJitter = await dbGet('config', 'chunk-jitter-ms');
-      if (typeof storedJitter === 'number' && storedJitter >= 0) {
-        setChunkJitterMs(storedJitter);
-      } else {
-        await dbPut('config', 'chunk-jitter-ms', DEFAULT_CHUNK_JITTER_MS);
-      }
-
-      // Check subscription
       if ('serviceWorker' in navigator) {
         const registration = await navigator.serviceWorker.ready;
         const sub = await registration.pushManager.getSubscription();
+
         if (sub) {
-          setSubscription(sub);
-          addLog('Found existing subscription');
+          setLocalPushSubscription(sub);
+          await shareStorage?.localPushSendStorage.getAll().then(async (all) => {
+            if (all.length > 0) {
+              setLocalPushSendOption({
+                ...all[0],
+                type: 'local',
+              });
+              addLog('Restored local push send option from storage');
+            } else {
+              const localPushSendId = crypto.randomUUID();
+              const vapidKeys = await serializeVapidKeys(await generateVapidKeys());
+
+              const subjsonString = JSON.stringify(sub);
+              const subjson = JSON.parse(subjsonString);
+
+              const p256dh = subjson.keys.p256dh;
+              const auth = subjson.keys.auth;
+
+              await shareStorage?.localPushSendStorage.put(localPushSendId, {
+                id: localPushSendId,
+                messageEncryption: {
+                  encoding: PushManager.supportedContentEncodings[0],
+                  p256dh: p256dh,
+                  auth: auth,
+                },
+                pushSubscription: {
+                  endpoint: sub.endpoint,
+                  expirationTime: sub.expirationTime,
+                },
+                vapidKeys,
+              });
+              addLog('Found existing subscription');
+            }
+
+            shareStorage?.localPushSendStorage.getAll().then((all) => {
+              if (all.length > 0) {
+                setLocalPushSendOption({
+                  ...all[0],
+                  type: 'local',
+                });
+              }
+            });
+            setIsServerStarted(true);
+            addLog('Server started');
+          });
         }
       }
     };
 
-    init();
-  }, [addLog, setVapidKeys, setSubscription]);
+    // init();
+    if (shareStorage) {
+      init();
+    }
+  }, [isShareStorageReady]);
 
   const handleIncomingMessage = useCallback(
-    (payload: any) => {
-      console.log('[Share] handleIncomingMessage payload:', payload);
-      let data: MessagePayload;
-      try {
-        data = typeof payload === 'string' ? JSON.parse(payload) : payload;
-        if (payload.body && typeof payload.body === 'string') {
-          try {
-            data = JSON.parse(payload.body);
-          } catch {
-            addLog(`Received raw text: ${payload.body}`);
-            return;
+    (payload: share.ShareMessagePayloadEnum) => {
+      switch (payload.t) {
+        case share.ShareMessagePayloadType.GUEST_TO_HOST_HANDSHAKE:
+          {
+            addLog('Received HANDSHAKE');
+            if (isServerStarted) {
+              setClients((prev) => {
+                // Avoid duplicates
+                const exists = prev.find((c) => c.pushSubscription.endpoint === payload.o.pushSubscription.endpoint);
+                if (exists) {
+                  return prev;
+                }
+                // Save to DB
+                if (payload.o.pushSubscription.endpoint) {
+                  shareStorage?.remotePushSendStorage.put(payload.o.id, payload.o);
+                }
+                return [...prev, payload.o];
+              });
+              addLog('New client connected!');
+            }
           }
-        }
-      } catch (e) {
-        console.error('[Share] Error parsing message:', e);
-        return;
-      }
-
-      if (data.type === 'HANDSHAKE' && data.senderConfig) {
-        addLog('Received HANDSHAKE');
-        if (isServerStarted) {
-          setClients((prev) => {
-            // Avoid duplicates
-            const exists = prev.find((c) => c.subscription.endpoint === data.senderConfig!.subscription.endpoint);
-            if (exists) {
-              return prev;
-            }
-            // Save to DB
-            if (data.senderConfig?.subscription.endpoint) {
-              dbPut('clients', data.senderConfig.subscription.endpoint, data.senderConfig);
-            }
-            return [...prev, data.senderConfig!];
-          });
-          addLog('New client connected!');
-        }
-      } else if (data.type === 'CHUNK') {
-        addLog(`Received CHUNK ${data.index! + 1}/${data.total}`);
+          break;
+        default:
+          console.warn('[Share] Unknown payload type:', payload);
       }
     },
-    [isServerStarted, addLog],
+    [isServerStarted, addLog, isShareStorageReady],
   );
 
   // Listen for SW messages
@@ -250,8 +173,7 @@ export function useBaabServer({
     const handler = (event: MessageEvent) => {
       console.log('[Share] SW Message:', event.data);
       if (event.data && event.data.type === 'PUSH_RECEIVED') {
-        const payload = event.data.payload;
-        handleIncomingMessage(payload);
+        handleIncomingMessage(event.data.payload);
       }
     };
     navigator.serviceWorker.addEventListener('message', handler);
@@ -259,86 +181,59 @@ export function useBaabServer({
   }, [handleIncomingMessage]);
 
   const startServer = async () => {
-    await ensureKeysAndSubscription();
-    setIsServerStarted(true);
-    await dbPut('config', 'mode', 'server');
-    addLog('Server started');
-  };
-
-  const sendMessage = async (targetConfig: RemoteConfig, payload: MessagePayload) => {
+    let readyReg: ServiceWorkerRegistration | null = null;
     try {
-      if (!vapidKeys) throw new Error('No VAPID keys');
-      const vapidKeyPair = await deserializeVapidKeys(vapidKeys);
+      readyReg = await navigator.serviceWorker.ready;
+    } catch (e) {
+      addLog('Service worker not ready. Is PWA registration running?');
+      throw e;
+    }
 
-      const send = async (p: MessagePayload) => {
-        const sub = targetConfig.subscription;
-        if (!sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
-          throw new Error('Invalid subscription data');
-        }
-        const encrypted = await encryptWebPush({
-          subscription: {
-            endpoint: sub.endpoint,
-            keys: {
-              p256dh: sub.keys.p256dh,
-              auth: sub.keys.auth,
-            },
-          },
-          vapidKeyPair,
-          payload: JSON.stringify(p),
-          contact: VAPID_SUBJECT,
-        });
+    let sub = await readyReg.pushManager.getSubscription();
 
-        const response = await fetch(PROXY_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            endpoint: encrypted.endpoint,
-            body: arrayBufferToBase64Url(encrypted.body),
-            headers: encrypted.headers,
-          }),
-        });
+    console.log({ sub });
 
-        if (!response.ok) {
-          throw new Error(await response.text());
-        }
-        return true;
+    if (!sub) {
+      const localPushSendId = crypto.randomUUID();
+      const vapidKeys = await serializeVapidKeys(await generateVapidKeys());
+
+      sub = await readyReg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: fromBase64Url(vapidKeys.publicKey),
+      });
+
+      setLocalPushSubscription(sub);
+
+      const localPushSendEntry = {
+        id: localPushSendId,
+        messageEncryption: {
+          encoding: PushManager.supportedContentEncodings[0],
+          p256dh: btoa(String.fromCharCode(...new Uint8Array(sub.getKey('p256dh')!))),
+          auth: btoa(String.fromCharCode(...new Uint8Array(sub.getKey('auth')!))),
+        },
+        pushSubscription: {
+          endpoint: sub.endpoint,
+          expirationTime: sub.expirationTime,
+        },
+        vapidKeys,
       };
 
-      const payloadStr = JSON.stringify(payload);
-      const MAX_CHUNK_SIZE = 2048;
-      const concurrency = Math.max(1, chunkConcurrency || DEFAULT_CHUNK_CONCURRENCY);
-      const jitterMs = Math.max(0, chunkJitterMs || 0);
-
-      if (payloadStr.length <= MAX_CHUNK_SIZE) {
-        return await send(payload);
-      } else {
-        const id = crypto.randomUUID();
-        const total = Math.ceil(payloadStr.length / MAX_CHUNK_SIZE);
-        const chunkPayloads: MessagePayload[] = Array.from({ length: total }).map((_, i) => ({
-          type: 'CHUNK',
-          id,
-          index: i,
-          total,
-          data: payloadStr.slice(i * MAX_CHUNK_SIZE, (i + 1) * MAX_CHUNK_SIZE),
-        }));
-
-        for (let i = 0; i < chunkPayloads.length; i += concurrency) {
-          const batch = chunkPayloads.slice(i, i + concurrency);
-          await Promise.all(
-            batch.map(async (chunk) => {
-              if (jitterMs > 0) {
-                await sleep(Math.random() * jitterMs);
-              }
-              return send(chunk);
-            }),
-          );
-        }
-        return true;
-      }
-    } catch (e: any) {
-      addLog(`Error sending message: ${e.message}`);
-      return false;
+      await shareStorage?.localPushSendStorage.put(localPushSendId, localPushSendEntry);
+      addLog('Subscribed to push notifications');
     }
+
+    setLocalPushSubscription(sub);
+
+    shareStorage?.localPushSendStorage.getAll().then((all) => {
+      if (all.length > 0) {
+        setLocalPushSendOption({
+          ...all[0],
+          type: 'local',
+        });
+      }
+    });
+    setIsServerStarted(true);
+    addLog('Server started');
   };
 
   const registerAsset = async () => {
@@ -364,85 +259,66 @@ export function useBaabServer({
 
     setIsBroadcasting(true);
     addLog('Starting asset broadcast...');
+
+    // Save to cache
+    // await dbPut('assets', 'latest-asset', assetPayload);
+    // await dbPut('assets', 'latest-asset-mode', assetMode);
+
+    await shareStorage?.latestAssetStorage.put(1, {
+      contentType: assetMode === 'text' ? 'plain/text' : assetMode === 'image' ? 'image/webp' : 'application/zip',
+      contentBase64: assetMode === 'text' ? compressedAssetText : assetMode === 'image' ? assetPayload : assetPayload,
+      createdAt: Date.now(),
+    });
+
+    addLog('Asset saved to cache');
+
     if (clients.length === 0) {
       addLog('No clients connected. Asset registered locally.');
-      // Save to cache
-      await dbPut('assets', 'latest-asset', assetPayload);
-
-      if (assetMode === 'directory' && manifestPayload) {
-        await dbPut('assets', 'latest-asset-manifest', manifestPayload);
-        if (directoryName) await dbPut('assets', 'latest-asset-dirname', directoryName);
-        if (typeof totalBytes === 'number') await dbPut('assets', 'latest-asset-bytes', totalBytes);
-        if (typeof fileCount === 'number') await dbPut('assets', 'latest-asset-filecount', fileCount);
-      }
-
-      await dbPut('assets', 'latest-asset-mode', assetMode);
       setIsBroadcasting(false);
       return;
     }
 
-    // Save to cache
-    await dbPut('assets', 'latest-asset', assetPayload);
-    await dbPut('assets', 'latest-asset-mode', assetMode);
-
-    if (assetMode === 'directory' && manifestPayload) {
-      await dbPut('assets', 'latest-asset-manifest', manifestPayload);
-      if (directoryName) await dbPut('assets', 'latest-asset-dirname', directoryName);
-      if (typeof totalBytes === 'number') await dbPut('assets', 'latest-asset-bytes', totalBytes);
-      if (typeof fileCount === 'number') await dbPut('assets', 'latest-asset-filecount', fileCount);
-    }
-
-    addLog('Asset saved to cache');
-
     addLog(`Broadcasting asset to ${clients.length} clients...`);
-
-    const broadcastStart = performance.now();
-    const payloadBytes = (() => {
-      if (assetMode === 'directory') {
-        // Prefer accurate total bytes if provided
-        if (typeof totalBytes === 'number' && totalBytes > 0) return totalBytes;
-        return dataUrlBytes(assetPayload);
-      }
-      if (assetMode === 'image') {
-        return dataUrlBytes(assetPayload);
-      }
-      return new TextEncoder().encode(assetPayload).length;
-    })();
 
     const failedEndpoints: string[] = [];
 
     for (const client of clients) {
-      const success = await sendMessage(client, {
-        type: 'ASSET',
-        asset: assetPayload,
-        assetMode: assetMode,
-        manifest: manifestPayload,
-        directoryName,
-        totalBytes,
-        fileCount,
-      });
-
-      if (!success && client.subscription.endpoint) {
-        failedEndpoints.push(client.subscription.endpoint);
+      await navigator.serviceWorker.ready;
+      const sw = navigator.serviceWorker.controller;
+      if (sw && localPushSendOption) {
+        sw.postMessage({
+          type: 'SHARE_SEND',
+          payloadString: JSON.stringify({
+            t: share.ShareMessagePayloadType.ASSET_TRANSFER,
+            c: assetMode === 'text' ? 'plain/text' : assetMode === 'image' ? 'image/webp' : 'application/zip',
+            d: assetPayload,
+          } satisfies share.AssetTransfer),
+          remotePushSendOption: {
+            ...client,
+          } satisfies share.ShareRemotePushSendOptions,
+          localPushSendOption: {
+            ...localPushSendOption,
+            type: 'local',
+          } satisfies share.ShareLocalPushSendOptions,
+        });
+      } else {
+        addLog('No active Service Worker controller found');
       }
     }
 
-    const broadcastEnd = performance.now();
-    const durationMs = Math.max(1, broadcastEnd - broadcastStart);
-    const totalBytesSent = payloadBytes * Math.max(1, clients.length);
-    const bps = (totalBytesSent / durationMs) * 1000;
-    setLastBroadcastBytes(totalBytesSent);
-    setLastBroadcastMs(durationMs);
-    addLog(`Broadcast speed ~${bpsToHuman(bps)} over ${bytesToHuman(totalBytesSent)} (${durationMs.toFixed(0)} ms).`);
-
     if (failedEndpoints.length > 0) {
       setClients((prev) =>
-        prev.filter((c) => c.subscription.endpoint && !failedEndpoints.includes(c.subscription.endpoint)),
+        prev.filter((c) => c.pushSubscription.endpoint && !failedEndpoints.includes(c.pushSubscription.endpoint)),
       );
 
       // Remove from cache
       for (const endpoint of failedEndpoints) {
-        await dbDelete('clients', endpoint);
+        await shareStorage?.remotePushSendStorage.getAll().then((all) => {
+          const target = all.find((c) => c.pushSubscription.endpoint === endpoint);
+          if (target) {
+            shareStorage?.remotePushSendStorage.delete(target.id);
+          }
+        });
       }
 
       addLog(`Removed ${failedEndpoints.length} unreachable clients.`);
@@ -453,12 +329,28 @@ export function useBaabServer({
   };
 
   const resetServer = async () => {
-    await resetBaab();
     setIsServerStarted(false);
     setClients([]);
+    setIsBroadcasting(false);
+    // Clear IndexedDB entries
+    await shareStorage?.localPushSendStorage.clear();
+    await shareStorage?.remotePushSendStorage.clear();
+    await shareStorage?.latestAssetStorage.clear();
+    await shareStorage?.receivedChunkedMessagesStorage.clear();
+    // unregister service worker
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    for (const registration of registrations) {
+      await registration.unregister();
+    }
+    addLog('Server reset complete');
+    if (localPushSubscription) {
+      localPushSubscription.unsubscribe();
+      setLocalPushSubscription(null);
+    }
   };
 
   return {
+    localPushSendOption,
     isServerStarted,
     isBroadcasting,
     clients,
@@ -471,12 +363,6 @@ export function useBaabServer({
     setImageAsset,
     directoryAsset,
     setDirectoryAsset,
-    chunkConcurrency,
-    chunkJitterMs,
-    lastBroadcastBytes,
-    lastBroadcastMs,
-    updateChunkConcurrency,
-    updateChunkJitterMs,
     startServer,
     registerAsset,
     resetServer,
