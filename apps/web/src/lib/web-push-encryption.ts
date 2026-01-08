@@ -1,4 +1,4 @@
-import { buildPushPayload } from '@block65/webcrypto-web-push';
+import { buildPushPayload } from './webcrypto-web-push';
 import { fromBase64Url, toBase64Url } from 'web-push-browser';
 
 export interface EncryptWebPushOptions {
