@@ -119,8 +119,6 @@ function Receive() {
                     ? `data:text/plain;charset=utf-8,${encodeURIComponent(asset.content)}`
                     : asset.content;
 
-                console.log({ asset });
-
                 const MAX_PREVIEW_CHARS = 600;
                 const isLongText = asset.type === 'text' && asset.content.length > MAX_PREVIEW_CHARS;
                 const previewText =

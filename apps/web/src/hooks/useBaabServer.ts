@@ -171,7 +171,6 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
   // Listen for SW messages
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      console.log('[Share] SW Message:', event.data);
       if (event.data && event.data.type === 'PUSH_RECEIVED') {
         handleIncomingMessage(event.data.payload);
       }
@@ -190,8 +189,6 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
     }
 
     let sub = await readyReg.pushManager.getSubscription();
-
-    console.log({ sub });
 
     if (!sub) {
       const localPushSendId = crypto.randomUUID();

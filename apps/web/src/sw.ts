@@ -19,7 +19,6 @@ const PROXY_URL = import.meta.env.VITE_PROXY_URL;
 
 async function broadcastToClients(data: chat.ChatMessagePayloadEnum | share.ShareMessagePayloadEnum) {
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  console.log('[SW] Broadcasting to', clients.length, 'clients');
   for (const client of clients) {
     client.postMessage({
       type: 'PUSH_RECEIVED',
@@ -30,7 +29,6 @@ async function broadcastToClients(data: chat.ChatMessagePayloadEnum | share.Shar
 
 async function broadcastDebugInfoToClients(info: any) {
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  console.log('[SW] Broadcasting debug info to', clients.length, 'clients');
   for (const client of clients) {
     client.postMessage({
       type: 'DEBUG_INFO',
@@ -91,8 +89,6 @@ async function sendPushMessage(encrypted: EncryptWebPushResult) {
   if (!res.ok) {
     throw new Error(`Push proxy responded ${res.status}`);
   }
-
-  console.log({ body: await res.json() });
 
   return res;
 }

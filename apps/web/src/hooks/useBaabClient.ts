@@ -51,8 +51,6 @@ export function useBaabClient({ addLog }: UseBaabClientProps) {
     if (initializedRef.current) return;
     initializedRef.current = true;
     const init = async () => {
-      console.log({ ran: true });
-
       const remotePushSendConfigs = await shareStorage?.remotePushSendStorage.getAll();
       if (remotePushSendConfigs && remotePushSendConfigs.length > 0) {
         const config = remotePushSendConfigs[0];
@@ -126,8 +124,6 @@ export function useBaabClient({ addLog }: UseBaabClientProps) {
       }
 
       let sub = await readyReg.pushManager.getSubscription();
-
-      console.log({ sub });
 
       if (!sub) {
         const localPushSendId = crypto.randomUUID();
@@ -240,8 +236,6 @@ export function useBaabClient({ addLog }: UseBaabClientProps) {
 
   const processMessage = useCallback(
     (data: share.ShareMessagePayloadEnum) => {
-      console.log({ 'data.t': data.t });
-
       switch (data.t) {
         case share.ShareMessagePayloadType.HANDSHAKE_ACK:
           addLog('Received HANDSHAKE_ACK from server');
@@ -271,8 +265,6 @@ export function useBaabClient({ addLog }: UseBaabClientProps) {
 
   const handleIncomingMessage = useCallback(
     (payload: share.ShareMessagePayloadEnum) => {
-      console.log('[Receive] handleIncomingMessage payload:', payload);
-
       processMessage(payload);
     },
     [addLog, processMessage],
@@ -281,7 +273,6 @@ export function useBaabClient({ addLog }: UseBaabClientProps) {
   // Listen for SW messages
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      console.log('[Receive] SW Message:', event.data);
       if (event.data && event.data.type === 'PUSH_RECEIVED') {
         handleIncomingMessage(event.data.payload);
       }
