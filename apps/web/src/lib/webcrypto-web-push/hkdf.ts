@@ -3,13 +3,15 @@
  * Implementation for Web Push encryption
  */
 
+const SHA256_HASH_LENGTH = 32;
+
 /**
  * Create HMAC hash function
  */
 function createHMAC(data: Uint8Array) {
   if (data.byteLength === 0) {
     return {
-      hash: () => Promise.resolve(new Uint8Array(32)),
+      hash: () => Promise.resolve(new Uint8Array(SHA256_HASH_LENGTH)),
     };
   }
 

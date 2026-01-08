@@ -14,10 +14,10 @@ export function flattenUint8Array(arrays: Uint8Array[]): Uint8Array {
 }
 
 /**
- * Convert value to Big Endian 16-bit representation
+ * Convert value to Big Endian 16-bit representation (byte swap)
  */
 export function be16(val: number): number {
-  // present an 8bit value as a Big Endian 16bit value
+  // Perform a 16-bit byte swap (little-endian to big-endian conversion)
   // eslint-disable-next-line no-bitwise
   return ((val & 0xff) << 8) | ((val >> 8) & 0xff);
 }
@@ -58,7 +58,7 @@ export function encodeLength(int: number): Uint8Array {
 /**
  * Throw error if condition is falsy
  */
-export function invariant(condition: any, message: string): asserts condition {
+export function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
