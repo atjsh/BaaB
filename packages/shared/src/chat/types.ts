@@ -1,9 +1,70 @@
 import type { ValueOf } from '../util';
 
 /**
+ * Maximum storage bytes per conversation (500MB)
+ */
+export const MAX_CONVERSATION_STORAGE_BYTES = 500 * 1024 * 1024;
+
+/**
  * VAPID keypair
  */
 export type VapidKeys = { publicKey: string; privateKey: string };
+
+/**
+ * Conversation status
+ */
+export const ConversationStatus = {
+  /** Handshake completed, peer is reachable */
+  ACTIVE: 'active',
+  /** Waiting for handshake acknowledgement */
+  PENDING: 'pending',
+  /** Push delivery failed, peer may be offline */
+  UNAVAILABLE: 'unavailable',
+  /** Conversation ended by user */
+  CLOSED: 'closed',
+} as const;
+export type ConversationStatus = ValueOf<typeof ConversationStatus>;
+
+/**
+ * Conversation role
+ */
+export const ConversationRole = {
+  /** User created/hosts this conversation */
+  HOST: 'host',
+  /** User joined this conversation */
+  GUEST: 'guest',
+} as const;
+export type ConversationRole = ValueOf<typeof ConversationRole>;
+
+/**
+ * Conversation entity
+ */
+export interface Conversation {
+  /** UUID of the conversation */
+  id: string;
+  /** Display name (auto-generated: "Chat with [peer-id-prefix]") */
+  name: string;
+  /** ID of the local push send options for this conversation */
+  localPushSendOptionsId: string;
+  /** ID of the remote push send options (peer's credentials) */
+  remotePushSendOptionsId?: string;
+  /** Current connection status */
+  status: ConversationStatus;
+  /** User's role in this conversation */
+  role: ConversationRole;
+  /** Last successful message timestamp (ms) */
+  lastActivityAt: number;
+  /** Last message preview text */
+  lastMessagePreview?: string;
+  /** Unread message count */
+  unreadCount: number;
+  /** Created timestamp (ms) */
+  createdAt: number;
+  /** Number of consecutive failed push attempts */
+  failedAttempts: number;
+  /** Storage bytes used by messages in this conversation */
+  storageBytesUsed: number;
+}
 
 /**
  * Web Push send options for "my" side
@@ -13,6 +74,10 @@ export interface ChatLocalPushSendOptions {
    * UUID of this PushSendOptions
    */
   id: string;
+  /**
+   * UUID of the conversation this belongs to
+   */
+  conversationId: string;
   type: 'local';
   pushSubscription: PushSubscriptionJSON;
   vapidKeys: VapidKeys;
@@ -31,6 +96,10 @@ export interface ChatRemotePushSendOptions {
    * UUID of this PushSendOptions
    */
   id: string;
+  /**
+   * UUID of the conversation this belongs to
+   */
+  conversationId: string;
   type: 'remote';
   pushSubscription: PushSubscriptionJSON;
   vapidKeys: {
@@ -134,9 +203,24 @@ export interface ChatMessagePayload {
   id: number;
 
   /**
+   * UUID of the conversation this message belongs to
+   */
+  conversationId: string;
+
+  /**
    * ID of the sender (UUID)
    */
   from: string;
+
+  /**
+   * Timestamp when message was sent (ms)
+   */
+  timestamp: number;
+
+  /**
+   * Size in bytes of this message (for storage quota tracking)
+   */
+  sizeBytes: number;
 
   /**
    * Full reconstructed message payload
@@ -149,7 +233,10 @@ export function isChatMessagePayload(obj: any): obj is ChatMessagePayload {
     typeof obj === 'object' &&
     obj !== null &&
     typeof obj.id === 'number' &&
+    typeof obj.conversationId === 'string' &&
     typeof obj.from === 'string' &&
+    typeof obj.timestamp === 'number' &&
+    typeof obj.sizeBytes === 'number' &&
     typeof obj.fullMessage === 'object' &&
     obj.fullMessage !== null &&
     typeof obj.fullMessage.t === 'string' &&
@@ -165,6 +252,11 @@ export interface ChunkedChatMessagePayload {
    * Type of this payload chunk (always 'c' for "ChatMessagePayload")
    */
   t: 'c';
+
+  /**
+   * UUID of the conversation this message belongs to
+   */
+  cid: string;
 
   /**
    * ID of the sender (UUID)
@@ -202,6 +294,7 @@ export function isChunkedChatMessagePayload(obj: any): obj is ChunkedChatMessage
     typeof obj === 'object' &&
     obj !== null &&
     obj.t === 'c' &&
+    typeof obj.cid === 'string' &&
     typeof obj.fr === 'string' &&
     typeof obj.id === 'number' &&
     typeof obj.i === 'number' &&
@@ -214,6 +307,8 @@ export type ChatLocalPushSendIndexedDBEntry = Omit<ChatLocalPushSendOptions, 'ty
 export type ChatRemotePushSendIndexedDBEntry = Omit<ChatRemotePushSendOptions, 'type'>;
 export type ChatReceivedChunkedMessageIndexedDBEntry = ChunkedChatMessagePayload;
 export type ChatMessagesIndexedDBEntry = ChatMessagePayload;
+export type ChatConversationIndexedDBEntry = Conversation;
+
 export const ChatIndexedDBStore = {
   /**
    * ChatLocalPushSendIndexedDBEntry
@@ -239,4 +334,24 @@ export const ChatIndexedDBStore = {
    * id = ChatMessagesIndexedDBEntry['id']
    */
   messagesStorageName: 'chat-messages',
+  /**
+   * ChatConversationIndexedDBEntry
+   *
+   * id = Conversation['id']
+   */
+  conversationsStorageName: 'chat-conversations',
 } as const;
+
+/**
+ * Helper to generate conversation name from peer ID
+ */
+export function generateConversationName(peerId: string): string {
+  return `Chat with ${peerId.slice(0, 8)}`;
+}
+
+/**
+ * Helper to calculate message size in bytes
+ */
+export function calculateMessageSizeBytes(message: ChatMessagePayloadEnum): number {
+  return new TextEncoder().encode(JSON.stringify(message)).length;
+}

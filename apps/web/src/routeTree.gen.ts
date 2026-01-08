@@ -13,6 +13,9 @@ import { Route as ShareRouteImport } from './routes/share'
 import { Route as ReceiveRouteImport } from './routes/receive'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ChatJoinRouteImport } from './routes/chat/join'
+import { Route as ChatHostRouteImport } from './routes/chat/host'
+import { Route as ChatChatroomIdRouteImport } from './routes/chat/$chatroomId'
 
 const ShareRoute = ShareRouteImport.update({
   id: '/share',
@@ -34,37 +37,83 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ChatJoinRoute = ChatJoinRouteImport.update({
+  id: '/join',
+  path: '/join',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatHostRoute = ChatHostRouteImport.update({
+  id: '/host',
+  path: '/host',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatChatroomIdRoute = ChatChatroomIdRouteImport.update({
+  id: '/$chatroomId',
+  path: '/$chatroomId',
+  getParentRoute: () => ChatRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/chat': typeof ChatRoute
+  '/chat': typeof ChatRouteWithChildren
   '/receive': typeof ReceiveRoute
   '/share': typeof ShareRoute
+  '/chat/$chatroomId': typeof ChatChatroomIdRoute
+  '/chat/host': typeof ChatHostRoute
+  '/chat/join': typeof ChatJoinRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/chat': typeof ChatRoute
+  '/chat': typeof ChatRouteWithChildren
   '/receive': typeof ReceiveRoute
   '/share': typeof ShareRoute
+  '/chat/$chatroomId': typeof ChatChatroomIdRoute
+  '/chat/host': typeof ChatHostRoute
+  '/chat/join': typeof ChatJoinRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/chat': typeof ChatRoute
+  '/chat': typeof ChatRouteWithChildren
   '/receive': typeof ReceiveRoute
   '/share': typeof ShareRoute
+  '/chat/$chatroomId': typeof ChatChatroomIdRoute
+  '/chat/host': typeof ChatHostRoute
+  '/chat/join': typeof ChatJoinRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/chat' | '/receive' | '/share'
+  fullPaths:
+    | '/'
+    | '/chat'
+    | '/receive'
+    | '/share'
+    | '/chat/$chatroomId'
+    | '/chat/host'
+    | '/chat/join'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/chat' | '/receive' | '/share'
-  id: '__root__' | '/' | '/chat' | '/receive' | '/share'
+  to:
+    | '/'
+    | '/chat'
+    | '/receive'
+    | '/share'
+    | '/chat/$chatroomId'
+    | '/chat/host'
+    | '/chat/join'
+  id:
+    | '__root__'
+    | '/'
+    | '/chat'
+    | '/receive'
+    | '/share'
+    | '/chat/$chatroomId'
+    | '/chat/host'
+    | '/chat/join'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ChatRoute: typeof ChatRoute
+  ChatRoute: typeof ChatRouteWithChildren
   ReceiveRoute: typeof ReceiveRoute
   ShareRoute: typeof ShareRoute
 }
@@ -99,12 +148,47 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/chat/join': {
+      id: '/chat/join'
+      path: '/join'
+      fullPath: '/chat/join'
+      preLoaderRoute: typeof ChatJoinRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/chat/host': {
+      id: '/chat/host'
+      path: '/host'
+      fullPath: '/chat/host'
+      preLoaderRoute: typeof ChatHostRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/chat/$chatroomId': {
+      id: '/chat/$chatroomId'
+      path: '/$chatroomId'
+      fullPath: '/chat/$chatroomId'
+      preLoaderRoute: typeof ChatChatroomIdRouteImport
+      parentRoute: typeof ChatRoute
+    }
   }
 }
 
+interface ChatRouteChildren {
+  ChatChatroomIdRoute: typeof ChatChatroomIdRoute
+  ChatHostRoute: typeof ChatHostRoute
+  ChatJoinRoute: typeof ChatJoinRoute
+}
+
+const ChatRouteChildren: ChatRouteChildren = {
+  ChatChatroomIdRoute: ChatChatroomIdRoute,
+  ChatHostRoute: ChatHostRoute,
+  ChatJoinRoute: ChatJoinRoute,
+}
+
+const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ChatRoute: ChatRoute,
+  ChatRoute: ChatRouteWithChildren,
   ReceiveRoute: ReceiveRoute,
   ShareRoute: ShareRoute,
 }

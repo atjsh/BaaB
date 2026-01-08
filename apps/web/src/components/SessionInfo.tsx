@@ -1,6 +1,18 @@
 import React from 'react';
 
-export const SessionInfo: React.FC = () => {
+interface SessionInfoProps {
+  compact?: boolean;
+}
+
+export const SessionInfo: React.FC<SessionInfoProps> = ({ compact = false }) => {
+  if (compact) {
+    return (
+      <div className="bg-gray-100 rounded p-2 text-xs">
+        <span className="font-medium">Connected ✅</span>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="bg-gray-100 rounded p-4 flex flex-col gap-2">

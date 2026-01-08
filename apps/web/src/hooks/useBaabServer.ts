@@ -171,8 +171,8 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
   // Listen for SW messages
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      if (event.data && event.data.type === 'PUSH_RECEIVED') {
-        handleIncomingMessage(event.data.payload);
+      if (event.data && event.data.type === 'PUSH_RECEIVED' && share.isShareMessagePayload(event.data.payload)) {
+        handleIncomingMessage(event.data.payload.fullMessage);
       }
     };
     navigator.serviceWorker.addEventListener('message', handler);
@@ -188,11 +188,34 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
       throw e;
     }
 
+    // Ensure the Service Worker is fully active before subscribing
+    if (!readyReg.active) {
+      // Wait for the Service Worker to activate
+      await new Promise<void>((resolve) => {
+        const sw = readyReg!.installing || readyReg!.waiting;
+        if (!sw) {
+          resolve();
+          return;
+        }
+        sw.addEventListener('statechange', () => {
+          if (sw.state === 'activated') {
+            resolve();
+          }
+        });
+      });
+    }
+
     let sub = await readyReg.pushManager.getSubscription();
 
     if (!sub) {
       const localPushSendId = crypto.randomUUID();
       const vapidKeys = await serializeVapidKeys(await generateVapidKeys());
+
+      // Unsubscribe any existing subscription with different keys first
+      const existingSubscription = await readyReg.pushManager.getSubscription();
+      if (existingSubscription) {
+        await existingSubscription.unsubscribe();
+      }
 
       sub = await readyReg.pushManager.subscribe({
         userVisibleOnly: true,

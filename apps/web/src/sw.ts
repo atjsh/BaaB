@@ -17,7 +17,7 @@ precacheAndRoute(self.__WB_MANIFEST);
 
 const PROXY_URL = import.meta.env.VITE_PROXY_URL;
 
-async function broadcastToClients(data: chat.ChatMessagePayloadEnum | share.ShareMessagePayloadEnum) {
+async function broadcastToClients(data: chat.ChatMessagePayload | share.ShareMessagePayload) {
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   for (const client of clients) {
     client.postMessage({
@@ -128,6 +128,7 @@ async function chunkAndSendChatMessage(
     const chunkData = payloadString.slice(i * 2048, (i + 1) * 2048);
     chunks.push({
       t: 'c',
+      cid: localPushSendOption.conversationId,
       fr: localPushSendOption.id,
       id: getRandomInt(1, 0xffffffff),
       mid: messageId,
@@ -165,14 +166,24 @@ async function chunkAndSendChatMessage(
   }
 }
 
+// Broadcast push failure to clients (for reconnection logic)
+// @ts-expect-error - Will be used for push failure detection in future
+async function _broadcastPushFailedToClients(conversationId: string, peerId: string) {
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  for (const client of clients) {
+    client.postMessage({
+      type: 'PUSH_FAILED',
+      conversationId,
+      peerId,
+    });
+  }
+}
+
 const handleChatChunkedMessage = async (
   chunkedPayload: chat.ChunkedChatMessagePayload,
   chatStorageManager: ChatStorageManager,
 ) => {
-  await chatStorageManager.receivedChunkedMessagesStorage.put(
-    await chatStorageManager.receivedChunkedMessagesStorage.generateId(),
-    chunkedPayload,
-  );
+  await chatStorageManager.receivedChunkedMessagesStorage.put(chunkedPayload);
 
   const allChunks = await chatStorageManager.receivedChunkedMessagesStorage.getAll();
   const relevantChunks = allChunks.filter(
@@ -185,10 +196,20 @@ const handleChatChunkedMessage = async (
     relevantChunks.sort((a, b) => a.i - b.i);
     const fullDataBase64 = relevantChunks.map((chunk) => chunk.d).join('');
     const parsedFullDataJson: chat.ChatMessagePayloadEnum = JSON.parse(fullDataBase64);
+
+    // Get conversation ID from the chunk (not from parsedFullDataJson)
+    const conversationId = chunkedPayload.cid;
+
+    // Calculate size bytes for the full message
+    const sizeBytes = chat.calculateMessageSizeBytes(parsedFullDataJson);
+
     const reconstructedChatMessagePayload: chat.ChatMessagePayload = {
       id: chunkedPayload.mid,
-      fullMessage: parsedFullDataJson,
+      conversationId,
       from: chunkedPayload.fr,
+      timestamp: Date.now(),
+      sizeBytes,
+      fullMessage: parsedFullDataJson,
     };
 
     const chatMessagePayload = chat.isChatMessagePayload(reconstructedChatMessagePayload)
@@ -202,10 +223,20 @@ const handleChatChunkedMessage = async (
       return;
     }
 
-    await chatStorageManager.chatMessagesStorage.put(chatMessagePayload.id, chatMessagePayload);
+    // Save message with quota check if it's a MESSAGE type
+    if (chatMessagePayload.fullMessage.t === chat.ChatMessagePayloadType.MESSAGE && conversationId) {
+      const result = await chatStorageManager.saveMessageWithQuotaCheck(chatMessagePayload);
+      if (!result.success) {
+        broadcastDebugInfoToClients(`Storage quota exceeded for conversation ${conversationId}`);
+        console.warn('Storage quota exceeded, message not saved');
+        // Still broadcast the message so user sees it but it won't persist
+      }
+    } else {
+      await chatStorageManager.chatMessagesStorage.put(chatMessagePayload);
+    }
 
     for (const chunk of relevantChunks) {
-      await chatStorageManager.receivedChunkedMessagesStorage.delete(chunk.i);
+      await chatStorageManager.receivedChunkedMessagesStorage.delete(chunk._dbKey);
     }
 
     const localPushSendOptions = await chatStorageManager.localPushSendStorage.getAll();
@@ -216,10 +247,29 @@ const handleChatChunkedMessage = async (
       return;
     }
 
+    // Find matching local push send option for this conversation
+    const localPushSendOption = conversationId
+      ? localPushSendOptions.find((o) => o.conversationId === conversationId) || localPushSendOptions[0]
+      : localPushSendOptions[0];
+
     switch (chatMessagePayload.fullMessage.t) {
       case chat.ChatMessagePayloadType.GUEST_TO_HOST_HANDSHAKE:
         const remotePushSendOption = chatMessagePayload.fullMessage.o;
-        await chatStorageManager.remotePushSendStorage.put(remotePushSendOption.id, remotePushSendOption);
+        await chatStorageManager.remotePushSendStorage.put(remotePushSendOption);
+
+        // Update or create conversation for the host
+        if (remotePushSendOption.conversationId) {
+          const existingConversation = await chatStorageManager.conversationsStorage.get(
+            remotePushSendOption.conversationId,
+          );
+          if (existingConversation) {
+            await chatStorageManager.conversationsStorage.updateStatus(
+              remotePushSendOption.conversationId,
+              chat.ConversationStatus.ACTIVE,
+            );
+            await chatStorageManager.conversationsStorage.resetFailedAttempts(remotePushSendOption.conversationId);
+          }
+        }
 
         const payload: chat.HandshakeAck = {
           t: chat.ChatMessagePayloadType.HANDSHAKE_ACK,
@@ -229,33 +279,84 @@ const handleChatChunkedMessage = async (
         await chunkAndSendChatMessage(
           payloadString,
           {
-            ...localPushSendOptions[0],
+            ...localPushSendOption,
             type: 'local',
           },
           remotePushSendOption,
         );
 
+        // Get conversation name for notification
+        const conversation = remotePushSendOption.conversationId
+          ? await chatStorageManager.conversationsStorage.get(remotePushSendOption.conversationId)
+          : null;
+        const joinNotifTitle = conversation ? `${conversation.name} joined` : 'New user has joined the chat';
+
         if ((await hasVisibleClient()) === false) {
-          self.registration.showNotification('New user has joined the chat', {
-            data: { url: `/chat?peer=${remotePushSendOption.id}` },
+          self.registration.showNotification(joinNotifTitle, {
+            tag: `chat-join-${remotePushSendOption.id}`,
+            data: { url: `/chat/host?conversation=${remotePushSendOption.conversationId || ''}` },
           });
         }
         break;
       case chat.ChatMessagePayloadType.HANDSHAKE_ACK:
+        // Update conversation status to ACTIVE for guest
+        if (conversationId) {
+          await chatStorageManager.conversationsStorage.updateStatus(conversationId, chat.ConversationStatus.ACTIVE);
+          await chatStorageManager.conversationsStorage.resetFailedAttempts(conversationId);
+        }
+
         if ((await hasVisibleClient()) === false) {
           self.registration.showNotification('Join request accepted', {
-            data: { url: `/chat?peer=${chatMessagePayload.from}` },
+            tag: `chat-ack-${chatMessagePayload.from}`,
+            data: { url: `/chat/join?conversation=${conversationId || ''}` },
           });
         }
         break;
       case chat.ChatMessagePayloadType.MESSAGE:
+        // Update last activity and increment unread count
+        if (conversationId) {
+          const msgContent = chatMessagePayload.fullMessage as chat.ChatMessage;
+          const preview =
+            msgContent.c === 'text/plain; charset=utf-8'
+              ? msgContent.d.substring(0, 50)
+              : msgContent.c.startsWith('image/')
+                ? '📷 Image'
+                : 'New message';
+          await chatStorageManager.conversationsStorage.updateLastActivity(conversationId, Date.now(), preview);
+          await chatStorageManager.conversationsStorage.incrementUnreadCount(conversationId);
+        }
+
+        // Get conversation for notification
+        const msgConversation = conversationId
+          ? await chatStorageManager.conversationsStorage.get(conversationId)
+          : null;
+        const msgNotifTitle = msgConversation ? msgConversation.name : 'New message';
+        const msgContent = chatMessagePayload.fullMessage as chat.ChatMessage;
+        const notifBody =
+          msgContent.c === 'text/plain; charset=utf-8'
+            ? msgContent.d.substring(0, 100)
+            : msgContent.c.startsWith('image/')
+              ? '📷 Image'
+              : 'New message';
+
         if ((await hasVisibleClient()) === false) {
-          self.registration.showNotification('New message', { data: { url: `/chat?peer=${chatMessagePayload.from}` } });
+          // Use unique tag per message for ungrouped notifications
+          self.registration.showNotification(msgNotifTitle, {
+            body: notifBody,
+            tag: `chat-msg-${chatMessagePayload.id}`,
+            data: {
+              url: msgConversation
+                ? msgConversation.role === chat.ConversationRole.HOST
+                  ? `/chat/host?conversation=${conversationId}`
+                  : `/chat/join?conversation=${conversationId}`
+                : `/chat`,
+            },
+          });
         }
         break;
     }
 
-    await broadcastToClients(chatMessagePayload.fullMessage);
+    await broadcastToClients(chatMessagePayload);
   }
 };
 
@@ -405,7 +506,7 @@ const handleShareChunkedMessage = async (
         break;
     }
 
-    await broadcastToClients(shareMessagePayload.fullMessage);
+    await broadcastToClients(shareMessagePayload);
   }
 };
 
