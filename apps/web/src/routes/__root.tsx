@@ -11,14 +11,19 @@ const RootLayout = () => (
             <b>🌏 BaaB</b>: Free & Private File Share and Chat
           </Link>
         </h1>
-        <a
-          href="https://github.com/atjsh/baab"
-          target="_blank"
-          rel="noreferrer"
-          className="ml-auto text-blue-500 underline md:no-underline hover:underline"
-        >
-          Source
-        </a>
+        <div className="ml-auto flex gap-4">
+          <Link to="/settings" className="text-blue-500 underline md:no-underline hover:underline">
+            Settings
+          </Link>
+          <a
+            href="https://github.com/atjsh/baab"
+            target="_blank"
+            rel="noreferrer"
+            className="text-blue-500 underline md:no-underline hover:underline"
+          >
+            Source
+          </a>
+        </div>
       </nav>
     </header>
     <hr />

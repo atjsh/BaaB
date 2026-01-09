@@ -2,9 +2,10 @@
 import { toBase64Url } from 'web-push-browser';
 import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching';
 
-import { chat, share } from '@baab/shared';
+import { chat, settings, share } from '@baab/shared';
 
 import { ChatStorageManager } from './lib/storage/chat.db';
+import { SettingsStorageManager } from './lib/storage/settings.db';
 import { ShareStorageManager } from './lib/storage/share.db';
 import { getRandomInt, sleep } from './lib/typescript';
 import { encryptWebPush, type EncryptWebPushResult } from './lib/web-push-encryption';
@@ -15,7 +16,10 @@ cleanupOutdatedCaches();
 
 precacheAndRoute(self.__WB_MANIFEST);
 
-const PROXY_URL = import.meta.env.VITE_PROXY_URL;
+const DEFAULT_PROXY_URL = import.meta.env.VITE_PROXY_URL;
+
+// Cache for settings to avoid repeated DB reads
+let cachedSettings: settings.AppSettings | null = null;
 
 async function broadcastToClients(data: chat.ChatMessagePayload | share.ShareMessagePayload) {
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -75,8 +79,32 @@ export interface ChatIncomingMessage {
   contentType: string;
 }
 
-async function sendPushMessage(encrypted: EncryptWebPushResult) {
-  const res = await fetch(PROXY_URL, {
+/**
+ * Get current settings from cache or load from IndexedDB
+ */
+async function getSettings(): Promise<settings.AppSettings> {
+  if (cachedSettings) {
+    return cachedSettings;
+  }
+
+  try {
+    const settingsStorage = await SettingsStorageManager.createInstance();
+    cachedSettings = await settingsStorage.settingsStorage.getOrDefault();
+    return cachedSettings;
+  } catch (error) {
+    console.warn('Failed to load settings, using defaults:', error);
+    return {
+      id: 1,
+      ...settings.DEFAULT_SETTINGS,
+    };
+  }
+}
+
+/**
+ * Send push message via proxy server
+ */
+async function sendPushMessageViaProxy(encrypted: EncryptWebPushResult, proxyUrl: string) {
+  const res = await fetch(proxyUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -91,6 +119,43 @@ async function sendPushMessage(encrypted: EncryptWebPushResult) {
   }
 
   return res;
+}
+
+/**
+ * Send push message directly to the push endpoint
+ */
+async function sendPushMessageDirect(encrypted: EncryptWebPushResult) {
+  // Convert Uint8Array to ArrayBuffer for fetch body
+  const bodyBuffer = encrypted.body.buffer.slice(
+    encrypted.body.byteOffset,
+    encrypted.body.byteOffset + encrypted.body.byteLength,
+  ) as ArrayBuffer;
+
+  const res = await fetch(encrypted.endpoint, {
+    method: 'POST',
+    headers: {
+      ...encrypted.headers,
+      'Content-Type': 'application/octet-stream',
+    },
+    body: bodyBuffer,
+  });
+
+  if (!res.ok) {
+    throw new Error(`Direct push responded ${res.status}`);
+  }
+
+  return res;
+}
+
+async function sendPushMessage(encrypted: EncryptWebPushResult) {
+  const appSettings = await getSettings();
+
+  if (appSettings.usePushProxy) {
+    const proxyUrl = appSettings.pushProxyHost || DEFAULT_PROXY_URL;
+    return sendPushMessageViaProxy(encrypted, proxyUrl);
+  } else {
+    return sendPushMessageDirect(encrypted);
+  }
 }
 
 async function sendPushMessageWithRetry(encrypted: EncryptWebPushResult, maxAttempts = 3) {
@@ -560,6 +625,11 @@ self.addEventListener('message', (event) => {
         await chunkAndSendShareMessage(msg.payloadString, msg.localPushSendOption, msg.remotePushSendOption);
       })(),
     );
+  } else if (msg.type === 'SETTINGS_UPDATED') {
+    // Update cached settings when they change
+    if (settings.isAppSettings(msg.payload)) {
+      cachedSettings = msg.payload;
+    }
   }
 });
 

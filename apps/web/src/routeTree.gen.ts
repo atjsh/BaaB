@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ShareRouteImport } from './routes/share'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ReceiveRouteImport } from './routes/receive'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as IndexRouteImport } from './routes/index'
@@ -20,6 +21,11 @@ import { Route as ChatChatroomIdRouteImport } from './routes/chat/$chatroomId'
 const ShareRoute = ShareRouteImport.update({
   id: '/share',
   path: '/share',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ReceiveRoute = ReceiveRouteImport.update({
@@ -57,6 +63,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/chat': typeof ChatRouteWithChildren
   '/receive': typeof ReceiveRoute
+  '/settings': typeof SettingsRoute
   '/share': typeof ShareRoute
   '/chat/$chatroomId': typeof ChatChatroomIdRoute
   '/chat/host': typeof ChatHostRoute
@@ -66,6 +73,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/chat': typeof ChatRouteWithChildren
   '/receive': typeof ReceiveRoute
+  '/settings': typeof SettingsRoute
   '/share': typeof ShareRoute
   '/chat/$chatroomId': typeof ChatChatroomIdRoute
   '/chat/host': typeof ChatHostRoute
@@ -76,6 +84,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/chat': typeof ChatRouteWithChildren
   '/receive': typeof ReceiveRoute
+  '/settings': typeof SettingsRoute
   '/share': typeof ShareRoute
   '/chat/$chatroomId': typeof ChatChatroomIdRoute
   '/chat/host': typeof ChatHostRoute
@@ -87,6 +96,7 @@ export interface FileRouteTypes {
     | '/'
     | '/chat'
     | '/receive'
+    | '/settings'
     | '/share'
     | '/chat/$chatroomId'
     | '/chat/host'
@@ -96,6 +106,7 @@ export interface FileRouteTypes {
     | '/'
     | '/chat'
     | '/receive'
+    | '/settings'
     | '/share'
     | '/chat/$chatroomId'
     | '/chat/host'
@@ -105,6 +116,7 @@ export interface FileRouteTypes {
     | '/'
     | '/chat'
     | '/receive'
+    | '/settings'
     | '/share'
     | '/chat/$chatroomId'
     | '/chat/host'
@@ -115,6 +127,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ChatRoute: typeof ChatRouteWithChildren
   ReceiveRoute: typeof ReceiveRoute
+  SettingsRoute: typeof SettingsRoute
   ShareRoute: typeof ShareRoute
 }
 
@@ -125,6 +138,13 @@ declare module '@tanstack/react-router' {
       path: '/share'
       fullPath: '/share'
       preLoaderRoute: typeof ShareRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/receive': {
@@ -190,6 +210,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ChatRoute: ChatRouteWithChildren,
   ReceiveRoute: ReceiveRoute,
+  SettingsRoute: SettingsRoute,
   ShareRoute: ShareRoute,
 }
 export const routeTree = rootRouteImport
