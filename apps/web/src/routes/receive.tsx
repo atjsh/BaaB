@@ -73,11 +73,11 @@ function Receive() {
         setInviteLink('');
       } else {
         // If URL doesn't have connect param, show error
-        addLog('Invalid invite link: missing connect parameter');
+        addLog('Invalid invite link: URL must contain a connect parameter');
       }
     } catch (error) {
       // If it's not a valid URL, treat it as raw connect data
-      addLog('Treating input as raw connect data');
+      addLog('Input is not a valid URL, attempting to use as raw connect data');
       await handleConnectData(inviteLink.trim());
       setInviteLink('');
     }
