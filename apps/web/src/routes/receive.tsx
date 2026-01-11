@@ -37,11 +37,14 @@ function Receive() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const [logs, setLogs] = useState<string[]>([]);
+  const [inviteLink, setInviteLink] = useState('');
+
+  const addLog = (msg: string) => {
+    setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
+  };
 
   const { serverConfig, receivedAssets, connectionStatus, handleConnectData, resetClient } = useBaabClient({
-    addLog: (msg: string) => {
-      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
-    },
+    addLog,
   });
 
   useEffect(() => {
@@ -55,6 +58,31 @@ function Receive() {
 
   const handleReset = async () => {
     await resetClient();
+  };
+
+  const handleSubmitInviteLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteLink.trim()) return;
+
+    try {
+      // Try to parse as a full URL first
+      const url = new URL(inviteLink.trim());
+      const connectParam = url.searchParams.get('connect');
+      
+      if (connectParam) {
+        // If it's a valid URL with a connect parameter, use that
+        await handleConnectData(connectParam);
+        setInviteLink('');
+      } else {
+        // If URL doesn't have connect param, show error
+        addLog('No connect parameter found in URL. Please check the invite link.');
+      }
+    } catch (error) {
+      // If it's not a valid URL, treat it as raw connect data
+      addLog('Treating input as raw connect data');
+      await handleConnectData(inviteLink.trim());
+      setInviteLink('');
+    }
   };
 
   if (connectionStatus === 'connected') {
@@ -168,6 +196,35 @@ function Receive() {
     <main className=" p-5 flex flex-col gap-4 mb-20 max-w-3xl">
       <h2 className="text-xl font-bold">Receive</h2>
       <HowToUse />
+
+      {connectionStatus === 'idle' && (
+        <div className="bg-white border rounded p-4 flex flex-col gap-3">
+          <h3 className="font-bold">Connect using invite link</h3>
+          <p className="text-sm text-gray-600">
+            Paste the invite link you received from the sender, or enter the connect code directly.
+          </p>
+          <form onSubmit={handleSubmitInviteLink} className="flex flex-col gap-2">
+            <label htmlFor="invite-link-input" className="text-sm font-medium">
+              Invite link or connect code
+            </label>
+            <input
+              id="invite-link-input"
+              type="text"
+              value={inviteLink}
+              onChange={(e) => setInviteLink(e.target.value)}
+              placeholder="Paste invite link here..."
+              className="border rounded px-3 py-2 w-full"
+            />
+            <button
+              type="submit"
+              disabled={!inviteLink.trim()}
+              className="bg-blue-500 text-white px-4 py-2 rounded disabled:bg-gray-300 disabled:cursor-not-allowed"
+            >
+              Connect
+            </button>
+          </form>
+        </div>
+      )}
 
       {connectionStatus === 'connecting' && <p>Connecting to the server...</p>}
 
