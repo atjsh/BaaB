@@ -204,7 +204,11 @@ function Receive() {
             Paste the invite link you received from the sender, or enter the connect code directly.
           </p>
           <form onSubmit={handleSubmitInviteLink} className="flex flex-col gap-2">
+            <label htmlFor="invite-link-input" className="text-sm font-medium">
+              Invite link or connect code
+            </label>
             <input
+              id="invite-link-input"
               type="text"
               value={inviteLink}
               onChange={(e) => setInviteLink(e.target.value)}
