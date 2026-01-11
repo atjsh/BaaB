@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
+import { useLocalPushCredentials } from '../hooks/useLocalPushCredentials';
 
 export const Route = createFileRoute('/')({
   component: Index,
@@ -9,41 +10,72 @@ export const Route = createFileRoute('/')({
       },
     ],
   }),
+  staticData: {
+    breadcrumb: 'Home',
+  },
 });
 
 function Index() {
+  const navigate = Route.useNavigate();
+  const { isInitialized, credentials } = useLocalPushCredentials();
+
+  if (!isInitialized) {
+    return <></>;
+  }
+
+  if (isInitialized && !credentials) {
+    navigate({ to: '/setup', replace: true });
+  }
+
   return (
     <main className="p-5 max-w-md">
       <div className="flex flex-col gap-6">
         <div className="flex flex-col gap-4">
-          <h2 className=" text-xl font-bold">
-            End-to-End Encrypted Communication Between Web Browsers Using Web Push API
-          </h2>
-          <ul className="list-inside">
-            <li className="list-['\1F512_']"> Secure. Only the intended recipients can decrypt and read messages.</li>
-            <li className="list-['\1F4AC_']">
-              {' '}
-              Censorship Resistant. BaaB uses web browser's push services, making it hard to block.
-            </li>
-            <li className="list-['\26A1_']">
-              {' '}
-              Instant. No sign-up required. You can host, join and leave sessions anytime.
-            </li>
-          </ul>
-          <p>Try it out:</p>
-          <ul className=" flex flex-row gap-4 list-none p-0 m-0">
-            <li>
-              <Link to="/share" className="underline">
-                Share Images and Files
-              </Link>
-            </li>
-            <li>or</li>
-            <li>
-              <Link to="/chat" className="underline">
-                New Chat
-              </Link>
-            </li>
-          </ul>
+          <div className="p-4 bg-gray-200">
+            <h2 className=" text-xl font-bold mb-2">Share Files</h2>
+            <ul className=" flex flex-col  p-0 m-0 ">
+              <li>
+                <Link to="/share" className="underline">
+                  Share
+                </Link>
+              </li>
+              <li>
+                <Link to="/receive" className="underline">
+                  Receive
+                </Link>
+              </li>
+            </ul>
+          </div>
+          <div className="p-4 bg-gray-200">
+            <h2 className=" text-xl font-bold mb-2">Chat with Friends</h2>
+            <ul className=" flex flex-col  p-0 m-0 ">
+              <li>
+                <Link to="/chat" className="underline">
+                  Start Chatting
+                </Link>
+              </li>
+            </ul>
+          </div>
+          <div className="p-4 bg-gray-200">
+            <h2 className=" text-xl font-bold mb-2">Advanced</h2>
+            <ul className=" flex flex-col  p-0 m-0 ">
+              <li>
+                <Link to="/settings" className="underline">
+                  Settings
+                </Link>
+              </li>
+              <li>
+                <Link to="/about" className="underline">
+                  About BaaB
+                </Link>
+              </li>
+              <li>
+                <a href="https://github.com/atjsh/BaaB" target="_blank" rel="noreferrer" className="underline">
+                  Source Code
+                </a>
+              </li>
+            </ul>
+          </div>
         </div>
       </div>
     </main>

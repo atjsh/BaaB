@@ -4,7 +4,7 @@ export const HowToUse: React.FC = () => {
   const hostname = window.location.hostname;
   return (
     <>
-      <div className="bg-gray-100 rounded p-4 flex flex-col gap-2">
+      <div className="bg-gray-200 p-4 flex flex-col gap-2">
         <h4 className=" font-bold text-md">
           If you are using Private Browsing Mode, Incognito Mode, or Secret Mode; Please Don't.
         </h4>
@@ -25,7 +25,7 @@ export const HowToUse: React.FC = () => {
           Use <b>normal browsing mode</b> for the best experience.
         </p>
       </div>
-      <details open className=" bg-gray-100 rounded p-4 flex flex-col gap-2">
+      <details open className=" bg-gray-200 p-4 flex flex-col gap-2">
         <summary className=" cursor-pointer list-none [&::-webkit-details-marker]:hidden">
           <h3 className=" font-bold text-md">How to use?</h3>
         </summary>

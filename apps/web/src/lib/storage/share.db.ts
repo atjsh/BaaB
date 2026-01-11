@@ -3,75 +3,7 @@ import { share } from '@baab/shared';
 import { openDB } from './db';
 
 const DB_NAME = 'share';
-const DB_VERSION = 1;
-
-export class LocalPushSendRepository {
-  #db: IDBDatabase;
-
-  constructor(db: IDBDatabase) {
-    this.#db = db;
-  }
-
-  static async init(): Promise<LocalPushSendRepository> {
-    return new LocalPushSendRepository(
-      await openDB({
-        dbName: DB_NAME,
-        dbVersion: DB_VERSION,
-        stores: Object.values(share.ShareIndexedDBStore),
-      }),
-    );
-  }
-
-  async put(entry: share.ShareLocalPushSendIndexedDBEntry): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const tx = this.#db.transaction(share.ShareIndexedDBStore.localPushSendStorageName, 'readwrite');
-      const store = tx.objectStore(share.ShareIndexedDBStore.localPushSendStorageName);
-      const request = store.put(entry);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async get(id: string): Promise<share.ShareLocalPushSendIndexedDBEntry | null> {
-    return new Promise((resolve, reject) => {
-      const tx = this.#db.transaction(share.ShareIndexedDBStore.localPushSendStorageName, 'readonly');
-      const store = tx.objectStore(share.ShareIndexedDBStore.localPushSendStorageName);
-      const request = store.get(id);
-      request.onsuccess = () => resolve(request.result || null);
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async delete(id: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const tx = this.#db.transaction(share.ShareIndexedDBStore.localPushSendStorageName, 'readwrite');
-      const store = tx.objectStore(share.ShareIndexedDBStore.localPushSendStorageName);
-      const request = store.delete(id);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async getAll(): Promise<share.ShareLocalPushSendIndexedDBEntry[]> {
-    return new Promise((resolve, reject) => {
-      const tx = this.#db.transaction(share.ShareIndexedDBStore.localPushSendStorageName, 'readonly');
-      const store = tx.objectStore(share.ShareIndexedDBStore.localPushSendStorageName);
-      const request = store.getAll();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async clear(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const tx = this.#db.transaction(share.ShareIndexedDBStore.localPushSendStorageName, 'readwrite');
-      const store = tx.objectStore(share.ShareIndexedDBStore.localPushSendStorageName);
-      const request = store.clear();
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-  }
-}
+const DB_VERSION = 2; // Bumped - removed LocalPushSendRepository
 
 export class RemotePushSendRepository {
   #db: IDBDatabase;
@@ -138,6 +70,29 @@ export class RemotePushSendRepository {
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
     });
+  }
+
+  /**
+   * Increment failed attempts for a remote. Returns the new count.
+   */
+  async incrementFailedAttempts(id: string): Promise<number> {
+    const entry = await this.get(id);
+    if (entry) {
+      const newCount = (entry.failedAttempts ?? 0) + 1;
+      await this.put({ ...entry, failedAttempts: newCount });
+      return newCount;
+    }
+    return 0;
+  }
+
+  /**
+   * Reset failed attempts for a remote.
+   */
+  async resetFailedAttempts(id: string): Promise<void> {
+    const entry = await this.get(id);
+    if (entry && entry.failedAttempts) {
+      await this.put({ ...entry, failedAttempts: 0 });
+    }
   }
 }
 
@@ -281,18 +236,15 @@ export class LatestAssetRepository {
 }
 
 export class ShareStorageManager {
-  #localPushSendStorage: LocalPushSendRepository;
   #remotePushSendStorage: RemotePushSendRepository;
   #receivedChunkedMessagesStorage: ReceivedChunkedMessageRepository;
   #latestAssetStorage: LatestAssetRepository;
 
   constructor(
-    localPushSendStorage: LocalPushSendRepository,
     remotePushSendStorage: RemotePushSendRepository,
     receivedChunkedMessagesStorage: ReceivedChunkedMessageRepository,
     latestAssetStorage: LatestAssetRepository,
   ) {
-    this.#localPushSendStorage = localPushSendStorage;
     this.#remotePushSendStorage = remotePushSendStorage;
     this.#receivedChunkedMessagesStorage = receivedChunkedMessagesStorage;
     this.#latestAssetStorage = latestAssetStorage;
@@ -300,15 +252,10 @@ export class ShareStorageManager {
 
   static async createInstance() {
     return new ShareStorageManager(
-      await LocalPushSendRepository.init(),
       await RemotePushSendRepository.init(),
       await ReceivedChunkedMessageRepository.init(),
       await LatestAssetRepository.init(),
     );
-  }
-
-  get localPushSendStorage() {
-    return this.#localPushSendStorage;
   }
 
   get remotePushSendStorage() {

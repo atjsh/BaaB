@@ -10,9 +10,11 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ShareRouteImport } from './routes/share'
+import { Route as SetupRouteImport } from './routes/setup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ReceiveRouteImport } from './routes/receive'
 import { Route as ChatRouteImport } from './routes/chat'
+import { Route as AboutRouteImport } from './routes/about'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ChatJoinRouteImport } from './routes/chat/join'
 import { Route as ChatHostRouteImport } from './routes/chat/host'
@@ -21,6 +23,11 @@ import { Route as ChatChatroomIdRouteImport } from './routes/chat/$chatroomId'
 const ShareRoute = ShareRouteImport.update({
   id: '/share',
   path: '/share',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SetupRoute = SetupRouteImport.update({
+  id: '/setup',
+  path: '/setup',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -36,6 +43,11 @@ const ReceiveRoute = ReceiveRouteImport.update({
 const ChatRoute = ChatRouteImport.update({
   id: '/chat',
   path: '/chat',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AboutRoute = AboutRouteImport.update({
+  id: '/about',
+  path: '/about',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -61,9 +73,11 @@ const ChatChatroomIdRoute = ChatChatroomIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/about': typeof AboutRoute
   '/chat': typeof ChatRouteWithChildren
   '/receive': typeof ReceiveRoute
   '/settings': typeof SettingsRoute
+  '/setup': typeof SetupRoute
   '/share': typeof ShareRoute
   '/chat/$chatroomId': typeof ChatChatroomIdRoute
   '/chat/host': typeof ChatHostRoute
@@ -71,9 +85,11 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/about': typeof AboutRoute
   '/chat': typeof ChatRouteWithChildren
   '/receive': typeof ReceiveRoute
   '/settings': typeof SettingsRoute
+  '/setup': typeof SetupRoute
   '/share': typeof ShareRoute
   '/chat/$chatroomId': typeof ChatChatroomIdRoute
   '/chat/host': typeof ChatHostRoute
@@ -82,9 +98,11 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/about': typeof AboutRoute
   '/chat': typeof ChatRouteWithChildren
   '/receive': typeof ReceiveRoute
   '/settings': typeof SettingsRoute
+  '/setup': typeof SetupRoute
   '/share': typeof ShareRoute
   '/chat/$chatroomId': typeof ChatChatroomIdRoute
   '/chat/host': typeof ChatHostRoute
@@ -94,9 +112,11 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/about'
     | '/chat'
     | '/receive'
     | '/settings'
+    | '/setup'
     | '/share'
     | '/chat/$chatroomId'
     | '/chat/host'
@@ -104,9 +124,11 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/about'
     | '/chat'
     | '/receive'
     | '/settings'
+    | '/setup'
     | '/share'
     | '/chat/$chatroomId'
     | '/chat/host'
@@ -114,9 +136,11 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/about'
     | '/chat'
     | '/receive'
     | '/settings'
+    | '/setup'
     | '/share'
     | '/chat/$chatroomId'
     | '/chat/host'
@@ -125,9 +149,11 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AboutRoute: typeof AboutRoute
   ChatRoute: typeof ChatRouteWithChildren
   ReceiveRoute: typeof ReceiveRoute
   SettingsRoute: typeof SettingsRoute
+  SetupRoute: typeof SetupRoute
   ShareRoute: typeof ShareRoute
 }
 
@@ -138,6 +164,13 @@ declare module '@tanstack/react-router' {
       path: '/share'
       fullPath: '/share'
       preLoaderRoute: typeof ShareRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/setup': {
+      id: '/setup'
+      path: '/setup'
+      fullPath: '/setup'
+      preLoaderRoute: typeof SetupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -159,6 +192,13 @@ declare module '@tanstack/react-router' {
       path: '/chat'
       fullPath: '/chat'
       preLoaderRoute: typeof ChatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/about': {
+      id: '/about'
+      path: '/about'
+      fullPath: '/about'
+      preLoaderRoute: typeof AboutRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -208,9 +248,11 @@ const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AboutRoute: AboutRoute,
   ChatRoute: ChatRouteWithChildren,
   ReceiveRoute: ReceiveRoute,
   SettingsRoute: SettingsRoute,
+  SetupRoute: SetupRoute,
   ShareRoute: ShareRoute,
 }
 export const routeTree = rootRouteImport

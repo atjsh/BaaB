@@ -1,32 +1,22 @@
 import { createRootRoute, HeadContent, Link, Outlet } from '@tanstack/react-router';
 import { TanStackRouterDevtools } from '@tanstack/react-router-devtools';
 
+import { Breadcrumbs } from '../components/Breadcrumbs';
+
 const RootLayout = () => (
   <>
     <HeadContent />
     <header>
-      <nav className="p-5 flex gap-2">
+      <nav className="pt-5 px-5 flex gap-2 flex-col">
         <h1 className="text-xl">
           <Link to="/">
-            <b>🌏 BaaB</b>: Free & Private File Share and Chat
+            <b>🌏 BaaB</b> <span className="text-xs font-normal md:text-xl">Free & Private File Share and Chat</span>
           </Link>
         </h1>
-        <div className="ml-auto flex gap-4">
-          <Link to="/settings" className="text-blue-500 underline md:no-underline hover:underline">
-            Settings
-          </Link>
-          <a
-            href="https://github.com/atjsh/baab"
-            target="_blank"
-            rel="noreferrer"
-            className="text-blue-500 underline md:no-underline hover:underline"
-          >
-            Source
-          </a>
-        </div>
+        <div className="mr-auto flex gap-4"></div>
       </nav>
     </header>
-    <hr />
+    <Breadcrumbs />
     <Outlet />
     <TanStackRouterDevtools />
   </>

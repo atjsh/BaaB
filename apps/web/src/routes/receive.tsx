@@ -2,7 +2,6 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useEffect, useState } from 'react';
 
 import { HowToUse } from '../components/HowToUse';
-import { SessionInfo } from '../components/SessionInfo';
 import { useBaabClient } from '../hooks/useBaabClient';
 
 type ReceiveRouteSearch = {
@@ -22,6 +21,9 @@ export const Route = createFileRoute('/receive')({
       },
     ],
   }),
+  staticData: {
+    breadcrumb: 'Receive',
+  },
   validateSearch: (search) => {
     const res: ReceiveRouteSearch = {};
     if ('connect' in search && typeof search.connect === 'string' && search.connect.length > 0) {
@@ -58,7 +60,6 @@ function Receive() {
   if (connectionStatus === 'connected') {
     return (
       <main className="p-5 flex flex-col gap-4 mb-20 max-w-3xl">
-        <SessionInfo />
         <div className="flex justify-between items-center">
           <h2 className="text-xl font-bold">Receive</h2>
           <button onClick={handleReset} className="text-red-500 text-sm underline">
@@ -154,7 +155,7 @@ function Receive() {
             </div>
           )}
         </div>
-        <div className="logs mt-4 p-2 bg-gray-100 rounded text-xs font-mono h-40 overflow-y-auto">
+        <div className="logs mt-4 p-2 bg-gray-200 rounded text-xs font-mono h-40 overflow-y-auto">
           {logs.map((log, i) => (
             <div key={i}>{log}</div>
           ))}
@@ -170,7 +171,7 @@ function Receive() {
 
       {connectionStatus === 'connecting' && <p>Connecting to the server...</p>}
 
-      <div className="logs mt-4 p-2 bg-gray-100 rounded text-xs font-mono h-40 overflow-y-auto">
+      <div className="logs mt-4 p-2 bg-gray-200 rounded text-xs font-mono h-40 overflow-y-auto">
         {logs.map((log, i) => (
           <div key={i}>{log}</div>
         ))}

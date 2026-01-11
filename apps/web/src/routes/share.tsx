@@ -6,7 +6,6 @@ import { share } from '@baab/shared';
 import { HowToUse } from '../components/HowToUse';
 import { ImageForm } from '../components/ImageForm';
 import { QRCode } from '../components/QRCode';
-import { SessionInfo } from '../components/SessionInfo';
 import { useBaabServer } from '../hooks/useBaabServer';
 
 export const Route = createFileRoute('/share')({
@@ -22,6 +21,9 @@ export const Route = createFileRoute('/share')({
       },
     ],
   }),
+  staticData: {
+    breadcrumb: 'Share',
+  },
 });
 
 function RouteComponent() {
@@ -38,7 +40,7 @@ function RouteComponent() {
     startServer,
     registerAsset,
     resetServer,
-    localPushSendOption,
+    localPushCredentials,
   } = useBaabServer({
     addLog: (msg: string) => {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
@@ -48,14 +50,9 @@ function RouteComponent() {
   const [enlargeQr, setEnlargeQr] = useState(false);
   const [isStartingServer, setIsStartingServer] = useState(false);
 
-  const shareLink = localPushSendOption
+  const shareLink = localPushCredentials
     ? `${window.location.origin}/receive?connect=${encodeURIComponent(
-        btoa(
-          JSON.stringify({
-            ...localPushSendOption,
-            type: 'remote',
-          } satisfies share.ShareRemotePushSendOptions),
-        ),
+        btoa(JSON.stringify(share.toShareRemotePushSendOptions(localPushCredentials))),
       )}`
     : '';
 
@@ -66,7 +63,6 @@ function RouteComponent() {
   if (isServerStarted) {
     return (
       <main className="p-5 flex flex-col gap-4 mb-20 max-w-3xl">
-        <SessionInfo />
         <div className="flex justify-between items-center">
           <h2 className="text-xl font-bold">Share</h2>
           <button onClick={handleReset} className="text-red-500 text-sm underline">
@@ -171,7 +167,7 @@ function RouteComponent() {
           )}
         </div>
 
-        <div className="logs mt-4 p-2 bg-gray-100 rounded text-xs font-mono h-40 overflow-y-auto">
+        <div className="logs mt-4 p-2 bg-gray-200 rounded text-xs font-mono h-40 overflow-y-auto">
           {logs.map((log, i) => (
             <div key={i}>{log}</div>
           ))}
@@ -198,7 +194,7 @@ function RouteComponent() {
           Start Sharing
         </button>
       </div>
-      <div className="logs mt-4 p-2 bg-gray-100 rounded text-xs font-mono h-40 overflow-y-auto">
+      <div className="logs mt-4 p-2 bg-gray-200 rounded text-xs font-mono h-40 overflow-y-auto">
         {logs.map((log, i) => (
           <div key={i}>{log}</div>
         ))}

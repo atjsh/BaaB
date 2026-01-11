@@ -6,6 +6,7 @@ import { chat } from '@baab/shared';
 import { ChatHeader } from '../../components/ChatHeader';
 import { ChatInput } from '../../components/ChatInput';
 import { ChatMessageList } from '../../components/ChatMessageList';
+import { MobileHeader } from '../../components/MobileHeader';
 import { useChatLayout } from '../../contexts/ChatLayoutContext';
 import { useChatClient } from '../../hooks/useChatClient';
 
@@ -26,6 +27,9 @@ export const Route = createFileRoute('/chat/join')({
       },
     ],
   }),
+  staticData: {
+    breadcrumb: 'Join',
+  },
   validateSearch: (search): ChatJoinRouteSearch => {
     const res: ChatJoinRouteSearch = {};
     if ('connect' in search && typeof search.connect === 'string' && search.connect.length > 0) {
@@ -53,6 +57,7 @@ function ChatJoinComponent() {
     deleteMessage,
     deleteConversation,
     retryConnection,
+    localPushCredentials,
   } = useChatClient({
     addLog: (msg: string) => {
       setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
@@ -92,16 +97,22 @@ function ChatJoinComponent() {
 
   if (!isInitialized) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-8">
-        <div className="animate-pulse text-gray-500">Initializing...</div>
+      <div className="flex-1 flex flex-col">
+        <MobileHeader onOpenSidebar={openSidebar} title="Join Chat" />
+        <div className="flex-1 flex flex-col items-center justify-center p-8">
+          <div className="animate-pulse text-gray-500">Initializing...</div>
+        </div>
       </div>
     );
   }
 
   if (connectionStatus === 'connecting') {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-8">
-        <div className="animate-pulse text-gray-500">Connecting to host...</div>
+      <div className="flex-1 flex flex-col">
+        <MobileHeader onOpenSidebar={openSidebar} title="Join Chat" />
+        <div className="flex-1 flex flex-col items-center justify-center p-8">
+          <div className="animate-pulse text-gray-500">Connecting to host...</div>
+        </div>
       </div>
     );
   }
@@ -109,27 +120,30 @@ function ChatJoinComponent() {
   // Show join form if no active conversation and no connect param
   if (!activeConversation && !search.connect) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-8">
-        <div className="mt-6 w-full max-w-md">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Enter invite link or connection string:
-          </label>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={manualConnectString}
-              onChange={(e) => setManualConnectString(e.target.value)}
-              placeholder="Paste invite link here..."
-              className="flex-1 border rounded px-3 py-2 text-sm"
-              onKeyDown={(e) => e.key === 'Enter' && handleManualJoin()}
-            />
-            <button
-              onClick={handleManualJoin}
-              disabled={!manualConnectString.trim()}
-              className="bg-green-500 text-white px-4 py-2 rounded text-sm disabled:opacity-50"
-            >
-              Join
-            </button>
+      <div className="flex-1 flex flex-col">
+        <MobileHeader onOpenSidebar={openSidebar} title="Join Chat" />
+        <div className="flex-1 flex flex-col items-center justify-center p-8">
+          <div className="w-full max-w-md">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Enter invite link or connection string:
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={manualConnectString}
+                onChange={(e) => setManualConnectString(e.target.value)}
+                placeholder="Paste invite link here..."
+                className="flex-1 border rounded px-3 py-2 text-sm"
+                onKeyDown={(e) => e.key === 'Enter' && handleManualJoin()}
+              />
+              <button
+                onClick={handleManualJoin}
+                disabled={!manualConnectString.trim()}
+                className="bg-green-500 text-white px-4 py-2 rounded text-sm disabled:opacity-50"
+              >
+                Join
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -138,8 +152,11 @@ function ChatJoinComponent() {
 
   if (!activeConversation) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-8 text-gray-500">
-        <p>No active conversation</p>
+      <div className="flex-1 flex flex-col">
+        <MobileHeader onOpenSidebar={openSidebar} title="Join Chat" />
+        <div className="flex-1 flex flex-col items-center justify-center p-8 text-gray-500">
+          <p>No active conversation</p>
+        </div>
       </div>
     );
   }
@@ -171,7 +188,7 @@ function ChatJoinComponent() {
       {/* Messages */}
       <ChatMessageList
         messages={messages}
-        currentUserId={activeConversation.localPushSendOptionsId}
+        currentUserId={localPushCredentials?.id ?? ''}
         onDeleteMessage={(messageId: number) => deleteMessage(activeConversation.id, messageId)}
       />
 
@@ -188,7 +205,7 @@ function ChatJoinComponent() {
 
       {/* Debug Logs */}
       {logs.length > 0 && (
-        <div className="border-t p-2 bg-gray-100 text-xs font-mono h-24 overflow-y-auto">
+        <div className="border-t p-2 bg-gray-200 text-xs font-mono h-24 overflow-y-auto">
           {logs.slice(0, 20).map((log, i) => (
             <div key={i} className="text-gray-600">
               {log}

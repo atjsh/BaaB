@@ -65,11 +65,11 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ conversation, inviteLink
             </button>
           )}
 
-          {/* Status indicator */}
-          <div className={`w-3 h-3 rounded-full shrink-0 ${getStatusColor(conversation.status)}`} />
-
-          <div className="min-w-0 flex-1">
-            <h2 className="font-bold text-base md:text-lg truncate">{conversation.name}</h2>
+          <div className="min-w-0 flex-1 flex flex-row items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className={`w-3 h-3 rounded-full shrink-0 ${getStatusColor(conversation.status)}`} />
+              <h2 className="font-bold text-base md:text-lg truncate">{conversation.name}</h2>
+            </div>
             <span className="text-xs md:text-sm text-gray-500">{getStatusText(conversation.status)}</span>
           </div>
         </div>

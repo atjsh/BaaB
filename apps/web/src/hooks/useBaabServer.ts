@@ -1,27 +1,33 @@
 import { compress, decompress } from 'lz-string';
 import { useCallback, useEffect, useState } from 'react';
-import { fromBase64Url, generateVapidKeys, serializeVapidKeys } from 'web-push-browser';
 
-import { share } from '@baab/shared';
+import { settings, share } from '@baab/shared';
 
 import { ShareStorageManager } from '../lib/storage/share.db';
+import { useLocalPushCredentials } from './useLocalPushCredentials';
 
 interface UseBaabServerProps {
   addLog: (msg: string) => void;
 }
 
 export function useBaabServer({ addLog }: UseBaabServerProps) {
-  const [localPushSubscription, setLocalPushSubscription] = useState<PushSubscription | null>(null);
   const [isShareStorageReady, setIsShareStorageReady] = useState(false);
   const [shareStorage, setSharedStorage] = useState<ShareStorageManager>();
+
+  const {
+    credentials: localPushCredentials,
+    isInitialized: isCredentialsInitialized,
+    initializeCredentials,
+  } = useLocalPushCredentials();
+
   useEffect(() => {
     ShareStorageManager.createInstance().then((instance) => {
       setSharedStorage(instance);
       setIsShareStorageReady(true);
     });
   }, []);
+
   const [isServerStarted, setIsServerStarted] = useState(false);
-  const [localPushSendOption, setLocalPushSendOption] = useState<share.ShareLocalPushSendOptions | null>(null);
   const [isBroadcasting, setIsBroadcasting] = useState(false);
 
   const [clients, setClients] = useState<share.ShareRemotePushSendOptions[]>([]);
@@ -68,75 +74,27 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
     }
   }, [isServerStarted, isShareStorageReady]);
 
-  // Initialize
+  // Initialize server when credentials are ready
   useEffect(() => {
     const init = async () => {
+      if (!shareStorage || !isCredentialsInitialized) return;
+
       // Restore server state from IndexedDB
-      const latestAsset = await shareStorage?.latestAssetStorage.get(1);
+      const latestAsset = await shareStorage.latestAssetStorage.get(1);
       if (latestAsset) {
         setIsServerStarted(true);
         addLog('Restored Server mode');
       }
 
-      if ('serviceWorker' in navigator) {
-        const registration = await navigator.serviceWorker.ready;
-        const sub = await registration.pushManager.getSubscription();
-
-        if (sub) {
-          setLocalPushSubscription(sub);
-          await shareStorage?.localPushSendStorage.getAll().then(async (all) => {
-            if (all.length > 0) {
-              setLocalPushSendOption({
-                ...all[0],
-                type: 'local',
-              });
-              addLog('Restored local push send option from storage');
-            } else {
-              const localPushSendId = crypto.randomUUID();
-              const vapidKeys = await serializeVapidKeys(await generateVapidKeys());
-
-              const subjsonString = JSON.stringify(sub);
-              const subjson = JSON.parse(subjsonString);
-
-              const p256dh = subjson.keys.p256dh;
-              const auth = subjson.keys.auth;
-
-              await shareStorage?.localPushSendStorage.put({
-                id: localPushSendId,
-                messageEncryption: {
-                  encoding: PushManager.supportedContentEncodings[0],
-                  p256dh: p256dh,
-                  auth: auth,
-                },
-                pushSubscription: {
-                  endpoint: sub.endpoint,
-                  expirationTime: sub.expirationTime,
-                },
-                vapidKeys,
-              });
-              addLog('Found existing subscription');
-            }
-
-            shareStorage?.localPushSendStorage.getAll().then((all) => {
-              if (all.length > 0) {
-                setLocalPushSendOption({
-                  ...all[0],
-                  type: 'local',
-                });
-              }
-            });
-            setIsServerStarted(true);
-            addLog('Server started');
-          });
-        }
+      // If we have credentials, consider server started
+      if (localPushCredentials) {
+        setIsServerStarted(true);
+        addLog('Server started with existing credentials');
       }
     };
 
-    // init();
-    if (shareStorage) {
-      init();
-    }
-  }, [isShareStorageReady]);
+    init();
+  }, [isShareStorageReady, isCredentialsInitialized, localPushCredentials]);
 
   const handleIncomingMessage = useCallback(
     (payload: share.ShareMessagePayloadEnum) => {
@@ -171,87 +129,40 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
   // Listen for SW messages
   useEffect(() => {
     const handler = (event: MessageEvent) => {
+      console.log({ event });
+
       if (event.data && event.data.type === 'PUSH_RECEIVED' && share.isShareMessagePayload(event.data.payload)) {
         handleIncomingMessage(event.data.payload.fullMessage);
+      }
+      if (event.data?.type === 'REMOTE_FORGOTTEN' && event.data.context === 'share') {
+        const { remoteId } = event.data;
+        // Remove from local clients list
+        setClients((prev) => prev.filter((c) => c.id !== remoteId));
+        addLog(`Client ${remoteId.slice(0, 8)} disconnected after repeated failures`);
+
+        // Show notification
+        const notification = new Notification('Client Disconnected', {
+          body: `A share client is no longer reachable.`,
+          tag: `share-remote-forgotten-${remoteId}`,
+        });
+        notification.onclick = () => {
+          window.focus();
+          notification.close();
+        };
       }
     };
     navigator.serviceWorker.addEventListener('message', handler);
     return () => navigator.serviceWorker.removeEventListener('message', handler);
-  }, [handleIncomingMessage]);
+  }, [handleIncomingMessage, addLog]);
 
   const startServer = async () => {
-    let readyReg: ServiceWorkerRegistration | null = null;
-    try {
-      readyReg = await navigator.serviceWorker.ready;
-    } catch (e) {
-      addLog('Service worker not ready. Is PWA registration running?');
-      throw e;
+    // Initialize credentials if not already done
+    const credentials = await initializeCredentials();
+    if (!credentials) {
+      addLog('Failed to initialize push credentials');
+      return;
     }
 
-    // Ensure the Service Worker is fully active before subscribing
-    if (!readyReg.active) {
-      // Wait for the Service Worker to activate
-      await new Promise<void>((resolve) => {
-        const sw = readyReg!.installing || readyReg!.waiting;
-        if (!sw) {
-          resolve();
-          return;
-        }
-        sw.addEventListener('statechange', () => {
-          if (sw.state === 'activated') {
-            resolve();
-          }
-        });
-      });
-    }
-
-    let sub = await readyReg.pushManager.getSubscription();
-
-    if (!sub) {
-      const localPushSendId = crypto.randomUUID();
-      const vapidKeys = await serializeVapidKeys(await generateVapidKeys());
-
-      // Unsubscribe any existing subscription with different keys first
-      const existingSubscription = await readyReg.pushManager.getSubscription();
-      if (existingSubscription) {
-        await existingSubscription.unsubscribe();
-      }
-
-      sub = await readyReg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: fromBase64Url(vapidKeys.publicKey),
-      });
-
-      setLocalPushSubscription(sub);
-
-      const localPushSendEntry = {
-        id: localPushSendId,
-        messageEncryption: {
-          encoding: PushManager.supportedContentEncodings[0],
-          p256dh: btoa(String.fromCharCode(...new Uint8Array(sub.getKey('p256dh')!))),
-          auth: btoa(String.fromCharCode(...new Uint8Array(sub.getKey('auth')!))),
-        },
-        pushSubscription: {
-          endpoint: sub.endpoint,
-          expirationTime: sub.expirationTime,
-        },
-        vapidKeys,
-      };
-
-      await shareStorage?.localPushSendStorage.put(localPushSendEntry);
-      addLog('Subscribed to push notifications');
-    }
-
-    setLocalPushSubscription(sub);
-
-    shareStorage?.localPushSendStorage.getAll().then((all) => {
-      if (all.length > 0) {
-        setLocalPushSendOption({
-          ...all[0],
-          type: 'local',
-        });
-      }
-    });
     setIsServerStarted(true);
     addLog('Server started');
   };
@@ -297,7 +208,7 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
     for (const client of clients) {
       await navigator.serviceWorker.ready;
       const sw = navigator.serviceWorker.controller;
-      if (sw && localPushSendOption) {
+      if (sw && localPushCredentials) {
         sw.postMessage({
           type: 'SHARE_SEND',
           payloadString: JSON.stringify({
@@ -308,10 +219,7 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
           remotePushSendOption: {
             ...client,
           } satisfies share.ShareRemotePushSendOptions,
-          localPushSendOption: {
-            ...localPushSendOption,
-            type: 'local',
-          } satisfies share.ShareLocalPushSendOptions,
+          localPushCredentials: localPushCredentials satisfies settings.LocalPushCredentials,
         });
       } else {
         addLog('No active Service Worker controller found');
@@ -345,7 +253,6 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
     setClients([]);
     setIsBroadcasting(false);
     // Clear IndexedDB entries
-    await shareStorage?.localPushSendStorage.clear();
     await shareStorage?.remotePushSendStorage.clear();
     await shareStorage?.latestAssetStorage.clear();
     await shareStorage?.receivedChunkedMessagesStorage.clear();
@@ -355,14 +262,10 @@ export function useBaabServer({ addLog }: UseBaabServerProps) {
       await registration.unregister();
     }
     addLog('Server reset complete');
-    if (localPushSubscription) {
-      localPushSubscription.unsubscribe();
-      setLocalPushSubscription(null);
-    }
   };
 
   return {
-    localPushSendOption,
+    localPushCredentials,
     isServerStarted,
     isBroadcasting,
     clients,

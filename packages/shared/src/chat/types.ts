@@ -1,14 +1,13 @@
 import type { ValueOf } from '../util';
+import type { LocalPushCredentials, VapidKeys } from '../settings/types';
+
+// Re-export from settings for backward compatibility
+export type { VapidKeys } from '../settings/types';
 
 /**
  * Maximum storage bytes per conversation (500MB)
  */
 export const MAX_CONVERSATION_STORAGE_BYTES = 500 * 1024 * 1024;
-
-/**
- * VAPID keypair
- */
-export type VapidKeys = { publicKey: string; privateKey: string };
 
 /**
  * Conversation status
@@ -44,8 +43,6 @@ export interface Conversation {
   id: string;
   /** Display name (auto-generated: "Chat with [peer-id-prefix]") */
   name: string;
-  /** ID of the local push send options for this conversation */
-  localPushSendOptionsId: string;
   /** ID of the remote push send options (peer's credentials) */
   remotePushSendOptionsId?: string;
   /** Current connection status */
@@ -67,24 +64,20 @@ export interface Conversation {
 }
 
 /**
- * Web Push send options for "my" side
+ * Convert LocalPushCredentials to ChatRemotePushSendOptions format (for sharing with remote party)
  */
-export interface ChatLocalPushSendOptions {
-  /**
-   * UUID of this PushSendOptions
-   */
-  id: string;
-  /**
-   * UUID of the conversation this belongs to
-   */
-  conversationId: string;
-  type: 'local';
-  pushSubscription: PushSubscriptionJSON;
-  vapidKeys: VapidKeys;
-  messageEncryption: {
-    encoding: (typeof PushManager.supportedContentEncodings)[number];
-    p256dh: string;
-    auth: string;
+export function toChatRemotePushSendOptions(
+  credentials: LocalPushCredentials,
+  conversationId: string,
+): ChatRemotePushSendOptions {
+  return {
+    id: credentials.id,
+    conversationId,
+    type: 'remote',
+    pushSubscription: credentials.pushSubscription,
+    vapidKeys: credentials.vapidKeys,
+    messageEncryption: credentials.messageEncryption,
+    webPushContacts: credentials.webPushContacts,
   };
 }
 
@@ -111,6 +104,11 @@ export interface ChatRemotePushSendOptions {
     p256dh: string;
     auth: string;
   };
+  webPushContacts: string;
+  /**
+   * Number of consecutive failed push attempts for this remote
+   */
+  failedAttempts?: number;
 }
 
 /**
@@ -131,6 +129,11 @@ export const ChatMessagePayloadType = {
    * 3. Host <-> Guest: Chat Message
    */
   MESSAGE: '3',
+
+  /**
+   * 4. Host <-> Guest: Credentials Update (propagate new VAPID keys)
+   */
+  CREDENTIALS_UPDATE: '4',
 } as const;
 export type ChatMessagePayloadType = ValueOf<typeof ChatMessagePayloadType>;
 
@@ -186,12 +189,34 @@ export interface ChatMessage {
    * Message content type, as in MIME type
    */
   c: ChatMessageContentType;
+
+  /**
+   * Whether the content is lz-string compressed (optional, for backward compatibility)
+   * Only applies to text/plain content type
+   */
+  z?: boolean;
+}
+
+/**
+ * Host <-> Guest: Credentials Update payload
+ * Sent when a user regenerates their VAPID keys to update the remote's stored credentials
+ */
+export interface CredentialsUpdate {
+  /**
+   * Payload type
+   */
+  t: typeof ChatMessagePayloadType.CREDENTIALS_UPDATE;
+
+  /**
+   * Updated remote push send options
+   */
+  o: ChatRemotePushSendOptions;
 }
 
 /**
  * Union of all chat message payloads
  */
-export type ChatMessagePayloadEnum = GuestToHostHandshake | HandshakeAck | ChatMessage;
+export type ChatMessagePayloadEnum = GuestToHostHandshake | HandshakeAck | ChatMessage | CredentialsUpdate;
 
 /**
  * The full chat message payload
@@ -303,19 +328,12 @@ export function isChunkedChatMessagePayload(obj: any): obj is ChunkedChatMessage
   );
 }
 
-export type ChatLocalPushSendIndexedDBEntry = Omit<ChatLocalPushSendOptions, 'type'>;
 export type ChatRemotePushSendIndexedDBEntry = Omit<ChatRemotePushSendOptions, 'type'>;
 export type ChatReceivedChunkedMessageIndexedDBEntry = ChunkedChatMessagePayload;
 export type ChatMessagesIndexedDBEntry = ChatMessagePayload;
 export type ChatConversationIndexedDBEntry = Conversation;
 
 export const ChatIndexedDBStore = {
-  /**
-   * ChatLocalPushSendIndexedDBEntry
-   *
-   * id = ChatLocalPushSendOptions['id']
-   */
-  localPushSendStorageName: 'chat-local-push-send-options',
   /**
    * ChatRemotePushSendIndexedDBEntry
    *

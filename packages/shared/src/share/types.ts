@@ -1,25 +1,20 @@
 import type { ValueOf } from '../util';
+import type { LocalPushCredentials, VapidKeys } from '../settings/types';
+
+// Re-export from settings for backward compatibility
+export type { VapidKeys } from '../settings/types';
 
 /**
- * VAPID keypair
+ * Convert LocalPushCredentials to ShareRemotePushSendOptions format (for sharing with remote party)
  */
-export type VapidKeys = { publicKey: string; privateKey: string };
-
-/**
- * Web Push send options for "my" side
- */
-export interface ShareLocalPushSendOptions {
-  /**
-   * UUID of this PushSendOptions
-   */
-  id: string;
-  type: 'local';
-  pushSubscription: PushSubscriptionJSON;
-  vapidKeys: VapidKeys;
-  messageEncryption: {
-    encoding: (typeof PushManager.supportedContentEncodings)[number];
-    p256dh: string;
-    auth: string;
+export function toShareRemotePushSendOptions(credentials: LocalPushCredentials): ShareRemotePushSendOptions {
+  return {
+    id: credentials.id,
+    type: 'remote',
+    pushSubscription: credentials.pushSubscription,
+    vapidKeys: credentials.vapidKeys,
+    messageEncryption: credentials.messageEncryption,
+    webPushContacts: credentials.webPushContacts,
   };
 }
 
@@ -42,6 +37,11 @@ export interface ShareRemotePushSendOptions {
     p256dh: string;
     auth: string;
   };
+  webPushContacts: string;
+  /**
+   * Number of consecutive failed push attempts for this remote
+   */
+  failedAttempts?: number;
 }
 
 /**
@@ -62,6 +62,11 @@ export const ShareMessagePayloadType = {
    * 3. Host <-> Guest: Asset Transfer
    */
   ASSET_TRANSFER: '3',
+
+  /**
+   * 4. Host <-> Guest: Credentials Update (propagate new VAPID keys)
+   */
+  CREDENTIALS_UPDATE: '4',
 } as const;
 export type ShareMessagePayloadType = ValueOf<typeof ShareMessagePayloadType>;
 
@@ -109,7 +114,28 @@ export interface AssetTransfer {
   c: string;
 }
 
-export type ShareMessagePayloadEnum = GuestToHostHandshake | HandshakeAck | AssetTransfer;
+/**
+ * Host <-> Guest: Credentials Update payload
+ * Sent when a user regenerates their VAPID keys to update the remote's stored credentials
+ */
+export interface CredentialsUpdate {
+  /**
+   * Payload type
+   */
+  t: typeof ShareMessagePayloadType.CREDENTIALS_UPDATE;
+
+  /**
+   * Updated remote push send options
+   */
+  o: ShareRemotePushSendOptions;
+
+  /**
+   * ID of the remote whose credentials are being updated
+   */
+  p: string;
+}
+
+export type ShareMessagePayloadEnum = GuestToHostHandshake | HandshakeAck | AssetTransfer | CredentialsUpdate;
 
 /**
  * The full share message payload
@@ -211,18 +237,10 @@ export interface ShareLatestAsset {
   createdAt: number;
 }
 
-export type ShareLocalPushSendIndexedDBEntry = Omit<ShareLocalPushSendOptions, 'type'>;
 export type ShareRemotePushSendIndexedDBEntry = Omit<ShareRemotePushSendOptions, 'type'>;
 export type ShareReceivedChunkedMessageIndexedDBEntry = ChunkedShareMessagePayload;
 export type ShareLatestAssetIndexedDBEntry = ShareLatestAsset;
 export const ShareIndexedDBStore = {
-  /**
-   * ShareLocalPushSendIndexedDBEntry
-   *
-   * id = ShareLocalPushSendOptions['id']
-   */
-  localPushSendStorageName: 'share-local-push-send-options',
-
   /**
    * ShareRemotePushSendIndexedDBEntry
    *

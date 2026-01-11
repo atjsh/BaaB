@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { decompress } from 'lz-string';
 import { toBase64Url } from 'web-push-browser';
 import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching';
 
@@ -87,17 +88,9 @@ async function getSettings(): Promise<settings.AppSettings> {
     return cachedSettings;
   }
 
-  try {
-    const settingsStorage = await SettingsStorageManager.createInstance();
-    cachedSettings = await settingsStorage.settingsStorage.getOrDefault();
-    return cachedSettings;
-  } catch (error) {
-    console.warn('Failed to load settings, using defaults:', error);
-    return {
-      id: 1,
-      ...settings.DEFAULT_SETTINGS,
-    };
-  }
+  const settingsStorage = await SettingsStorageManager.createInstance();
+  cachedSettings = await settingsStorage.settingsStorage.getOrDefault();
+  return cachedSettings;
 }
 
 /**
@@ -176,11 +169,22 @@ async function sendPushMessageWithRetry(encrypted: EncryptWebPushResult, maxAtte
   throw lastErr ?? new Error('Failed to send push message');
 }
 
+const MAX_REMOTE_FAILURES = 3;
+
+/**
+ * Result of chunk sending operation
+ */
+interface ChunkSendResult {
+  success: boolean;
+  remoteForgotten: boolean;
+}
+
 async function chunkAndSendChatMessage(
   payloadString: string,
-  localPushSendOption: chat.ChatLocalPushSendOptions,
+  conversationId: string,
+  localPushCredentials: settings.LocalPushCredentials,
   remotePushSendOption: chat.ChatRemotePushSendOptions,
-): Promise<void> {
+): Promise<ChunkSendResult> {
   if (!remotePushSendOption.pushSubscription.endpoint) {
     throw new Error('No push subscription endpoint available in remote push send options');
   }
@@ -193,8 +197,8 @@ async function chunkAndSendChatMessage(
     const chunkData = payloadString.slice(i * 2048, (i + 1) * 2048);
     chunks.push({
       t: 'c',
-      cid: localPushSendOption.conversationId,
-      fr: localPushSendOption.id,
+      cid: conversationId,
+      fr: localPushCredentials.id,
       id: getRandomInt(1, 0xffffffff),
       mid: messageId,
       i,
@@ -204,31 +208,76 @@ async function chunkAndSendChatMessage(
   }
 
   const { concurrency, jitterMs } = { concurrency: 3, jitterMs: 500 };
+  const chatStorageManager = await ChatStorageManager.createInstance();
 
   for (let i = 0; i < chunks.length; i += concurrency) {
     const batch = chunks.slice(i, i + concurrency);
-    await Promise.all(
-      batch.map(async (chunk) => {
-        if (jitterMs > 0) {
-          await sleep(Math.random() * jitterMs);
-        }
-        const encrypted: EncryptWebPushResult = await encryptWebPush({
-          subscription: {
-            endpoint,
-            keys: {
-              auth: remotePushSendOption.messageEncryption.auth,
-              p256dh: remotePushSendOption.messageEncryption.p256dh,
+    try {
+      await Promise.all(
+        batch.map(async (chunk) => {
+          if (jitterMs > 0) {
+            await sleep(Math.random() * jitterMs);
+          }
+          const encrypted: EncryptWebPushResult = await encryptWebPush({
+            subscription: {
+              endpoint,
+              keys: {
+                auth: remotePushSendOption.messageEncryption.auth,
+                p256dh: remotePushSendOption.messageEncryption.p256dh,
+              },
             },
-          },
-          vapidKeyPair: remotePushSendOption.vapidKeys,
-          payload: JSON.stringify(chunk),
-          contact: self.location.origin,
-          urgency: 'high',
-        });
-        return sendPushMessageWithRetry(encrypted, 3);
-      }),
-    );
+            vapidKeyPair: remotePushSendOption.vapidKeys,
+            payload: JSON.stringify(chunk),
+            contact: remotePushSendOption.webPushContacts,
+            urgency: 'high',
+          });
+          return sendPushMessageWithRetry(encrypted, 3);
+        }),
+      );
+    } catch (err) {
+      // Batch failed - increment failure count for this remote
+      const failedAttempts = await chatStorageManager.remotePushSendStorage.incrementFailedAttempts(
+        remotePushSendOption.id,
+      );
+      broadcastDebugInfoToClients(
+        `Chat push failed for remote ${remotePushSendOption.id}, attempt ${failedAttempts}/${MAX_REMOTE_FAILURES}`,
+      );
+
+      if (failedAttempts >= MAX_REMOTE_FAILURES) {
+        // Get conversation name before deleting for notification
+        const conversation = await chatStorageManager.conversationsStorage.get(conversationId);
+        const conversationName = conversation?.name;
+
+        // Delete the remote
+        await chatStorageManager.remotePushSendStorage.delete(remotePushSendOption.id);
+
+        // Mark conversation as unavailable
+        if (conversationId) {
+          await chatStorageManager.conversationsStorage.updateStatus(
+            conversationId,
+            chat.ConversationStatus.UNAVAILABLE,
+          );
+        }
+
+        // Broadcast to clients
+        await broadcastRemoteForgotten(remotePushSendOption.id, 'chat', conversationId, conversationName);
+
+        broadcastDebugInfoToClients(
+          `Remote ${remotePushSendOption.id} forgotten after ${MAX_REMOTE_FAILURES} failures`,
+        );
+
+        return { success: false, remoteForgotten: true };
+      }
+
+      // Re-throw to let caller know sending failed
+      throw err;
+    }
   }
+
+  // All chunks sent successfully - reset failure count
+  await chatStorageManager.remotePushSendStorage.resetFailedAttempts(remotePushSendOption.id);
+
+  return { success: true, remoteForgotten: false };
 }
 
 // Broadcast push failure to clients (for reconnection logic)
@@ -240,6 +289,27 @@ async function _broadcastPushFailedToClients(conversationId: string, peerId: str
       type: 'PUSH_FAILED',
       conversationId,
       peerId,
+    });
+  }
+}
+
+/**
+ * Broadcast that a remote has been forgotten (deleted after max failures)
+ */
+async function broadcastRemoteForgotten(
+  remoteId: string,
+  context: 'chat' | 'share',
+  conversationId?: string,
+  conversationName?: string,
+) {
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  for (const client of clients) {
+    client.postMessage({
+      type: 'REMOTE_FORGOTTEN',
+      remoteId,
+      context,
+      conversationId,
+      conversationName,
     });
   }
 }
@@ -260,7 +330,28 @@ const handleChatChunkedMessage = async (
   if (relevantChunks.length === chunkedPayload.all) {
     relevantChunks.sort((a, b) => a.i - b.i);
     const fullDataBase64 = relevantChunks.map((chunk) => chunk.d).join('');
-    const parsedFullDataJson: chat.ChatMessagePayloadEnum = JSON.parse(fullDataBase64);
+    let parsedFullDataJson: chat.ChatMessagePayloadEnum = JSON.parse(fullDataBase64);
+
+    // Decompress text messages if compressed (z flag is set)
+    if (
+      parsedFullDataJson.t === chat.ChatMessagePayloadType.MESSAGE &&
+      parsedFullDataJson.z === true &&
+      parsedFullDataJson.c === chat.ChatMessageContentType.TEXT_PLAIN
+    ) {
+      const compressedData = parsedFullDataJson.d;
+      const decompressedText = decompress(compressedData);
+      if (decompressedText) {
+        // Convert decompressed text to base64 for consistent storage format
+        parsedFullDataJson = {
+          ...parsedFullDataJson,
+          d: btoa(decompressedText),
+          z: undefined, // Remove compression flag since it's now decompressed
+        };
+      } else {
+        broadcastDebugInfoToClients('Failed to decompress message content');
+        console.warn('Failed to decompress message content');
+      }
+    }
 
     // Get conversation ID from the chunk (not from parsedFullDataJson)
     const conversationId = chunkedPayload.cid;
@@ -304,18 +395,15 @@ const handleChatChunkedMessage = async (
       await chatStorageManager.receivedChunkedMessagesStorage.delete(chunk._dbKey);
     }
 
-    const localPushSendOptions = await chatStorageManager.localPushSendStorage.getAll();
+    // Get local push credentials from settings storage
+    const settingsStorageManager = await SettingsStorageManager.createInstance();
+    const localPushCredentials = await settingsStorageManager.localPushCredentialsStorage.get();
 
-    if (localPushSendOptions.length === 0) {
-      broadcastDebugInfoToClients('No local push send options stored; cannot respond to chat message');
-      console.warn('No local push send options stored; cannot respond to chat message', chatMessagePayload);
+    if (!localPushCredentials) {
+      broadcastDebugInfoToClients('No local push credentials stored; cannot respond to chat message');
+      console.warn('No local push credentials stored; cannot respond to chat message', chatMessagePayload);
       return;
     }
-
-    // Find matching local push send option for this conversation
-    const localPushSendOption = conversationId
-      ? localPushSendOptions.find((o) => o.conversationId === conversationId) || localPushSendOptions[0]
-      : localPushSendOptions[0];
 
     switch (chatMessagePayload.fullMessage.t) {
       case chat.ChatMessagePayloadType.GUEST_TO_HOST_HANDSHAKE:
@@ -343,10 +431,8 @@ const handleChatChunkedMessage = async (
 
         await chunkAndSendChatMessage(
           payloadString,
-          {
-            ...localPushSendOption,
-            type: 'local',
-          },
+          remotePushSendOption.conversationId,
+          localPushCredentials,
           remotePushSendOption,
         );
 
@@ -356,10 +442,10 @@ const handleChatChunkedMessage = async (
           : null;
         const joinNotifTitle = conversation ? `${conversation.name} joined` : 'New user has joined the chat';
 
-        if ((await hasVisibleClient()) === false) {
+        if ((await hasVisibleClient()) === false && remotePushSendOption.conversationId) {
           self.registration.showNotification(joinNotifTitle, {
             tag: `chat-join-${remotePushSendOption.id}`,
-            data: { url: `/chat/host?conversation=${remotePushSendOption.conversationId || ''}` },
+            data: { url: `/chat/${remotePushSendOption.conversationId}` },
           });
         }
         break;
@@ -370,20 +456,31 @@ const handleChatChunkedMessage = async (
           await chatStorageManager.conversationsStorage.resetFailedAttempts(conversationId);
         }
 
-        if ((await hasVisibleClient()) === false) {
+        if ((await hasVisibleClient()) === false && conversationId) {
           self.registration.showNotification('Join request accepted', {
             tag: `chat-ack-${chatMessagePayload.from}`,
-            data: { url: `/chat/join?conversation=${conversationId || ''}` },
+            data: { url: `/chat/${conversationId}` },
           });
         }
         break;
       case chat.ChatMessagePayloadType.MESSAGE:
         // Update last activity and increment unread count
         if (conversationId) {
-          const msgContent = chatMessagePayload.fullMessage as chat.ChatMessage;
+          const msgContent = chatMessagePayload.fullMessage;
+          // Content is stored as base64, decode for preview
+          const decodedText =
+            msgContent.c === chat.ChatMessageContentType.TEXT_PLAIN
+              ? (() => {
+                  try {
+                    return atob(msgContent.d);
+                  } catch {
+                    return msgContent.d;
+                  }
+                })()
+              : '';
           const preview =
-            msgContent.c === 'text/plain; charset=utf-8'
-              ? msgContent.d.substring(0, 50)
+            msgContent.c === chat.ChatMessageContentType.TEXT_PLAIN
+              ? decodedText.substring(0, 50)
               : msgContent.c.startsWith('image/')
                 ? '📷 Image'
                 : 'New message';
@@ -396,10 +493,21 @@ const handleChatChunkedMessage = async (
           ? await chatStorageManager.conversationsStorage.get(conversationId)
           : null;
         const msgNotifTitle = msgConversation ? msgConversation.name : 'New message';
-        const msgContent = chatMessagePayload.fullMessage as chat.ChatMessage;
+        const msgContent = chatMessagePayload.fullMessage;
+        // Content is stored as base64, decode for notification body
+        const decodedNotifText =
+          msgContent.c === chat.ChatMessageContentType.TEXT_PLAIN
+            ? (() => {
+                try {
+                  return atob(msgContent.d);
+                } catch {
+                  return msgContent.d;
+                }
+              })()
+            : '';
         const notifBody =
-          msgContent.c === 'text/plain; charset=utf-8'
-            ? msgContent.d.substring(0, 100)
+          msgContent.c === chat.ChatMessageContentType.TEXT_PLAIN
+            ? decodedNotifText.substring(0, 100)
             : msgContent.c.startsWith('image/')
               ? '📷 Image'
               : 'New message';
@@ -412,11 +520,37 @@ const handleChatChunkedMessage = async (
             data: {
               url: msgConversation
                 ? msgConversation.role === chat.ConversationRole.HOST
-                  ? `/chat/host?conversation=${conversationId}`
-                  : `/chat/join?conversation=${conversationId}`
+                  ? `/chat/${msgConversation.id}`
+                  : `/chat/${msgConversation.id}`
                 : `/chat`,
             },
           });
+        }
+        break;
+      case chat.ChatMessagePayloadType.CREDENTIALS_UPDATE:
+        // Remote peer has updated their credentials - update our stored RemotePushSendOptions
+        const updatedCredentials = chatMessagePayload.fullMessage;
+        const existingRemote = await chatStorageManager.remotePushSendStorage.get(updatedCredentials.o.id);
+        if (existingRemote) {
+          await chatStorageManager.remotePushSendStorage.put({
+            ...updatedCredentials.o,
+            conversationId: existingRemote.conversationId,
+            id: existingRemote.id,
+          });
+          broadcastDebugInfoToClients(`Updated remote credentials for ${updatedCredentials.o.id}`);
+        } else {
+          // New remote with same id, try to find by conversation
+          if (conversationId) {
+            const remoteByConv = await chatStorageManager.remotePushSendStorage.getByConversationId(conversationId);
+            if (remoteByConv) {
+              await chatStorageManager.remotePushSendStorage.delete(remoteByConv.id);
+              await chatStorageManager.remotePushSendStorage.put({
+                ...updatedCredentials.o,
+                conversationId,
+              });
+              broadcastDebugInfoToClients(`Replaced remote credentials for conversation ${conversationId}`);
+            }
+          }
         }
         break;
     }
@@ -427,9 +561,9 @@ const handleChatChunkedMessage = async (
 
 async function chunkAndSendShareMessage(
   payloadString: string,
-  localPushSendOption: share.ShareLocalPushSendOptions,
+  localPushCredentials: settings.LocalPushCredentials,
   remotePushSendOption: share.ShareRemotePushSendOptions,
-): Promise<void> {
+): Promise<ChunkSendResult> {
   if (!remotePushSendOption.pushSubscription.endpoint) {
     throw new Error('No push subscription endpoint available in remote push send options');
   }
@@ -442,7 +576,7 @@ async function chunkAndSendShareMessage(
     const chunkData = payloadString.slice(i * 2048, (i + 1) * 2048);
     chunks.push({
       t: 's',
-      fr: localPushSendOption.id,
+      fr: localPushCredentials.id,
       id: getRandomInt(1, 0xffffffff),
       mid: messageId,
       i,
@@ -452,32 +586,65 @@ async function chunkAndSendShareMessage(
   }
 
   const { concurrency, jitterMs } = { concurrency: 3, jitterMs: 500 };
+  const shareStorageManager = await ShareStorageManager.createInstance();
 
   for (let i = 0; i < chunks.length; i += concurrency) {
     const batch = chunks.slice(i, i + concurrency);
 
-    await Promise.all(
-      batch.map(async (chunk) => {
-        if (jitterMs > 0) {
-          await sleep(Math.random() * jitterMs);
-        }
-        const encrypted: EncryptWebPushResult = await encryptWebPush({
-          subscription: {
-            endpoint,
-            keys: {
-              auth: remotePushSendOption.messageEncryption.auth,
-              p256dh: remotePushSendOption.messageEncryption.p256dh,
+    try {
+      await Promise.all(
+        batch.map(async (chunk) => {
+          if (jitterMs > 0) {
+            await sleep(Math.random() * jitterMs);
+          }
+          const encrypted: EncryptWebPushResult = await encryptWebPush({
+            subscription: {
+              endpoint,
+              keys: {
+                auth: remotePushSendOption.messageEncryption.auth,
+                p256dh: remotePushSendOption.messageEncryption.p256dh,
+              },
             },
-          },
-          vapidKeyPair: remotePushSendOption.vapidKeys,
-          payload: JSON.stringify(chunk),
-          contact: self.location.origin,
-          urgency: 'high',
-        });
-        return sendPushMessageWithRetry(encrypted, 3);
-      }),
-    );
+            vapidKeyPair: remotePushSendOption.vapidKeys,
+            payload: JSON.stringify(chunk),
+            contact: remotePushSendOption.webPushContacts,
+            urgency: 'high',
+          });
+          return sendPushMessageWithRetry(encrypted, 3);
+        }),
+      );
+    } catch (err) {
+      // Batch failed - increment failure count for this remote
+      const failedAttempts = await shareStorageManager.remotePushSendStorage.incrementFailedAttempts(
+        remotePushSendOption.id,
+      );
+      broadcastDebugInfoToClients(
+        `Share push failed for remote ${remotePushSendOption.id}, attempt ${failedAttempts}/${MAX_REMOTE_FAILURES}`,
+      );
+
+      if (failedAttempts >= MAX_REMOTE_FAILURES) {
+        // Delete the remote
+        await shareStorageManager.remotePushSendStorage.delete(remotePushSendOption.id);
+
+        // Broadcast to clients
+        await broadcastRemoteForgotten(remotePushSendOption.id, 'share');
+
+        broadcastDebugInfoToClients(
+          `Share remote ${remotePushSendOption.id} forgotten after ${MAX_REMOTE_FAILURES} failures`,
+        );
+
+        return { success: false, remoteForgotten: true };
+      }
+
+      // Re-throw to let caller know sending failed
+      throw err;
+    }
   }
+
+  // All chunks sent successfully - reset failure count
+  await shareStorageManager.remotePushSendStorage.resetFailedAttempts(remotePushSendOption.id);
+
+  return { success: true, remoteForgotten: false };
 }
 
 const handleShareChunkedMessage = async (
@@ -522,11 +689,13 @@ const handleShareChunkedMessage = async (
       await shareStorageManager.receivedChunkedMessagesStorage.delete(chunk.i);
     }
 
-    const localPushSendOptions = await shareStorageManager.localPushSendStorage.getAll();
+    // Get local push credentials from settings storage
+    const settingsStorageManager = await SettingsStorageManager.createInstance();
+    const localPushCredentials = await settingsStorageManager.localPushCredentialsStorage.get();
 
-    if (localPushSendOptions.length === 0) {
-      broadcastDebugInfoToClients('No local push send options stored; cannot respond to share message');
-      console.warn('No local push send options stored; cannot respond to share message', shareMessagePayload);
+    if (!localPushCredentials) {
+      broadcastDebugInfoToClients('No local push credentials stored; cannot respond to share message');
+      console.warn('No local push credentials stored; cannot respond to share message', shareMessagePayload);
       return;
     }
 
@@ -539,7 +708,7 @@ const handleShareChunkedMessage = async (
           JSON.stringify({
             t: share.ShareMessagePayloadType.HANDSHAKE_ACK,
           } satisfies share.HandshakeAck),
-          { ...localPushSendOptions[0], type: 'local' },
+          localPushCredentials,
           remotePushSendOption,
         );
         if ((await hasVisibleClient()) === false) {
@@ -554,7 +723,7 @@ const handleShareChunkedMessage = async (
               c: latestAsset.contentType,
               d: latestAsset.contentBase64,
             } satisfies share.AssetTransfer),
-            { ...localPushSendOptions[0], type: 'local' },
+            localPushCredentials,
             remotePushSendOption,
           );
         }
@@ -567,6 +736,21 @@ const handleShareChunkedMessage = async (
       case share.ShareMessagePayloadType.ASSET_TRANSFER:
         if ((await hasVisibleClient()) === false) {
           self.registration.showNotification('New asset received', { data: { url: `/receive` } });
+        }
+        break;
+      case share.ShareMessagePayloadType.CREDENTIALS_UPDATE:
+        // Remote peer has updated their credentials - update our stored RemotePushSendOptions
+        const shareUpdatedCredentials = shareMessagePayload.fullMessage;
+        const existingShareRemote = await shareStorageManager.remotePushSendStorage.get(shareUpdatedCredentials.p);
+        if (existingShareRemote) {
+          await shareStorageManager.remotePushSendStorage.put({
+            ...shareUpdatedCredentials.o,
+            id: existingShareRemote.id,
+          });
+          broadcastDebugInfoToClients(`Updated share remote credentials for ${shareUpdatedCredentials.o.id}`);
+        } else {
+          await shareStorageManager.remotePushSendStorage.put(shareUpdatedCredentials.o);
+          broadcastDebugInfoToClients(`Added new share remote credentials for ${shareUpdatedCredentials.o.id}`);
         }
         break;
     }
@@ -616,13 +800,18 @@ self.addEventListener('message', (event) => {
   if (msg.type === 'CHAT_SEND') {
     event.waitUntil(
       (async () => {
-        await chunkAndSendChatMessage(msg.payloadString, msg.localPushSendOption, msg.remotePushSendOption);
+        await chunkAndSendChatMessage(
+          msg.payloadString,
+          msg.conversationId,
+          msg.localPushCredentials,
+          msg.remotePushSendOption,
+        );
       })(),
     );
   } else if (msg.type === 'SHARE_SEND') {
     event.waitUntil(
       (async () => {
-        await chunkAndSendShareMessage(msg.payloadString, msg.localPushSendOption, msg.remotePushSendOption);
+        await chunkAndSendShareMessage(msg.payloadString, msg.localPushCredentials, msg.remotePushSendOption);
       })(),
     );
   } else if (msg.type === 'SETTINGS_UPDATED') {
@@ -630,6 +819,81 @@ self.addEventListener('message', (event) => {
     if (settings.isAppSettings(msg.payload)) {
       cachedSettings = msg.payload;
     }
+  } else if (msg.type === 'PROPAGATE_CREDENTIALS') {
+    // Propagate new credentials to all connected remotes
+    event.waitUntil(
+      (async () => {
+        const localPushCredentials = msg.localPushCredentials;
+        const previousLocalPushCredentialId = msg.previousLocalPushCredentialId;
+        if (!localPushCredentials || !previousLocalPushCredentialId) {
+          broadcastDebugInfoToClients(
+            `PROPAGATE_CREDENTIALS: No credentials provided for propagation; ${localPushCredentials}, ${previousLocalPushCredentialId}`,
+          );
+          return;
+        }
+
+        const chatStorageManager = await ChatStorageManager.createInstance();
+        const shareStorageManager = await ShareStorageManager.createInstance();
+
+        // Get all connected remotes
+        const chatRemotes = await chatStorageManager.remotePushSendStorage.getAll();
+        const shareRemotes = await shareStorageManager.remotePushSendStorage.getAll();
+
+        const results = { chat: { success: 0, failed: 0 }, share: { success: 0, failed: 0 } };
+
+        // Propagate to chat remotes
+        for (const remote of chatRemotes) {
+          try {
+            const credentialsUpdate: chat.CredentialsUpdate = {
+              t: chat.ChatMessagePayloadType.CREDENTIALS_UPDATE,
+              o: chat.toChatRemotePushSendOptions(localPushCredentials, remote.conversationId),
+            };
+            await chunkAndSendChatMessage(
+              JSON.stringify(credentialsUpdate),
+              remote.conversationId,
+              localPushCredentials,
+              { ...remote, type: 'remote' },
+            );
+            results.chat.success++;
+          } catch (err) {
+            console.error(`Failed to propagate credentials to chat remote ${remote.id}:`, err);
+            results.chat.failed++;
+          }
+        }
+
+        // Propagate to share remotes
+        for (const remote of shareRemotes) {
+          try {
+            const credentialsUpdate: share.CredentialsUpdate = {
+              t: share.ShareMessagePayloadType.CREDENTIALS_UPDATE,
+              o: share.toShareRemotePushSendOptions(localPushCredentials),
+              p: previousLocalPushCredentialId,
+            };
+            await chunkAndSendShareMessage(JSON.stringify(credentialsUpdate), localPushCredentials, {
+              ...remote,
+              type: 'remote',
+            });
+            results.share.success++;
+          } catch (err) {
+            console.error(`Failed to propagate credentials to share remote ${remote.id}:`, err);
+            results.share.failed++;
+          }
+        }
+
+        // Notify clients of propagation results
+        const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        for (const client of clients) {
+          client.postMessage({
+            type: 'CREDENTIALS_PROPAGATED',
+            results,
+          });
+        }
+
+        broadcastDebugInfoToClients(
+          `Credentials propagated: Chat ${results.chat.success}/${chatRemotes.length}, Share ${results.share.success}/${shareRemotes.length}`,
+        );
+      })(),
+    );
   }
 });
 

@@ -131,7 +131,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled = false, 
             onKeyDown={handleKeyDown}
             disabled={disabled}
             placeholder={disabled ? 'Cannot send messages...' : 'Type a message...'}
-            className="w-full border rounded-lg px-3 md:px-4 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed text-base min-h-[44px] max-h-[120px]"
+            className="w-full border rounded-lg px-3 md:px-4 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-200 disabled:cursor-not-allowed text-base min-h-[44px] max-h-[120px]"
             rows={1}
           />
         </div>

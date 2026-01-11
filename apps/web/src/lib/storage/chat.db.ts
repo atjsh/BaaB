@@ -3,80 +3,7 @@ import { chat } from '@baab/shared';
 import { openDB } from './db';
 
 const DB_NAME = 'chat';
-const DB_VERSION = 2;
-
-export class LocalPushSendRepository {
-  #db: IDBDatabase;
-
-  constructor(db: IDBDatabase) {
-    this.#db = db;
-  }
-
-  static async init(): Promise<LocalPushSendRepository> {
-    return new LocalPushSendRepository(
-      await openDB({
-        dbName: DB_NAME,
-        dbVersion: DB_VERSION,
-        stores: Object.values(chat.ChatIndexedDBStore),
-      }),
-    );
-  }
-
-  async put(entry: chat.ChatLocalPushSendIndexedDBEntry): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const tx = this.#db.transaction(chat.ChatIndexedDBStore.localPushSendStorageName, 'readwrite');
-      const store = tx.objectStore(chat.ChatIndexedDBStore.localPushSendStorageName);
-      const request = store.put(entry);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async get(id: string): Promise<chat.ChatLocalPushSendIndexedDBEntry | null> {
-    return new Promise<chat.ChatLocalPushSendIndexedDBEntry | null>((resolve, reject) => {
-      const tx = this.#db.transaction(chat.ChatIndexedDBStore.localPushSendStorageName, 'readonly');
-      const store = tx.objectStore(chat.ChatIndexedDBStore.localPushSendStorageName);
-      const request = store.get(id);
-      request.onsuccess = () => resolve(request.result || null);
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async getByConversationId(conversationId: string): Promise<chat.ChatLocalPushSendIndexedDBEntry | null> {
-    const all = await this.getAll();
-    return all.find((entry) => entry.conversationId === conversationId) || null;
-  }
-
-  async delete(id: string): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const tx = this.#db.transaction(chat.ChatIndexedDBStore.localPushSendStorageName, 'readwrite');
-      const store = tx.objectStore(chat.ChatIndexedDBStore.localPushSendStorageName);
-      const request = store.delete(id);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async getAll(): Promise<chat.ChatLocalPushSendIndexedDBEntry[]> {
-    return new Promise<chat.ChatLocalPushSendIndexedDBEntry[]>((resolve, reject) => {
-      const tx = this.#db.transaction(chat.ChatIndexedDBStore.localPushSendStorageName, 'readonly');
-      const store = tx.objectStore(chat.ChatIndexedDBStore.localPushSendStorageName);
-      const request = store.getAll();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async clear(): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const tx = this.#db.transaction(chat.ChatIndexedDBStore.localPushSendStorageName, 'readwrite');
-      const store = tx.objectStore(chat.ChatIndexedDBStore.localPushSendStorageName);
-      const request = store.clear();
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-  }
-}
+const DB_VERSION = 3; // Bumped - removed LocalPushSendRepository
 
 export class RemotePushSendRepository {
   #db: IDBDatabase;
@@ -153,6 +80,29 @@ export class RemotePushSendRepository {
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
     });
+  }
+
+  /**
+   * Increment failed attempts for a remote. Returns the new count.
+   */
+  async incrementFailedAttempts(id: string): Promise<number> {
+    const entry = await this.get(id);
+    if (entry) {
+      const newCount = (entry.failedAttempts ?? 0) + 1;
+      await this.put({ ...entry, failedAttempts: newCount });
+      return newCount;
+    }
+    return 0;
+  }
+
+  /**
+   * Reset failed attempts for a remote.
+   */
+  async resetFailedAttempts(id: string): Promise<void> {
+    const entry = await this.get(id);
+    if (entry && entry.failedAttempts) {
+      await this.put({ ...entry, failedAttempts: 0 });
+    }
   }
 }
 
@@ -464,20 +414,17 @@ export class ConversationsRepository {
 }
 
 export class ChatStorageManager {
-  #localPushSendStorage: LocalPushSendRepository;
   #remotePushSendStorage: RemotePushSendRepository;
   #receivedChunkedMessagesStorage: ReceivedChunkedMessagesRepository;
   #chatMessagesStorage: ChatMessagesRepository;
   #conversationsStorage: ConversationsRepository;
 
   constructor(
-    localPushSendStorage: LocalPushSendRepository,
     remotePushSendStorage: RemotePushSendRepository,
     receivedChunkedMessagesStorage: ReceivedChunkedMessagesRepository,
     chatMessagesStorage: ChatMessagesRepository,
     conversationsStorage: ConversationsRepository,
   ) {
-    this.#localPushSendStorage = localPushSendStorage;
     this.#remotePushSendStorage = remotePushSendStorage;
     this.#receivedChunkedMessagesStorage = receivedChunkedMessagesStorage;
     this.#chatMessagesStorage = chatMessagesStorage;
@@ -486,16 +433,11 @@ export class ChatStorageManager {
 
   static async createInstance() {
     return new ChatStorageManager(
-      await LocalPushSendRepository.init(),
       await RemotePushSendRepository.init(),
       await ReceivedChunkedMessagesRepository.init(),
       await ChatMessagesRepository.init(),
       await ConversationsRepository.init(),
     );
-  }
-
-  get localPushSendStorage() {
-    return this.#localPushSendStorage;
   }
 
   get remotePushSendStorage() {
@@ -562,11 +504,6 @@ export class ChatStorageManager {
 
     // Delete all messages
     await this.#chatMessagesStorage.deleteByConversationId(conversationId);
-
-    // Delete local push send options
-    if (conversation.localPushSendOptionsId) {
-      await this.#localPushSendStorage.delete(conversation.localPushSendOptionsId);
-    }
 
     // Delete remote push send options
     if (conversation.remotePushSendOptionsId) {
