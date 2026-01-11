@@ -58,7 +58,7 @@ function Receive() {
     await resetClient();
   };
 
-  const handleSubmitInviteLink = (e: React.FormEvent) => {
+  const handleSubmitInviteLink = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteLink.trim()) return;
 
@@ -69,7 +69,7 @@ function Receive() {
       
       if (connectParam) {
         // If it's a valid URL with a connect parameter, use that
-        handleConnectData(connectParam);
+        await handleConnectData(connectParam);
         setInviteLink('');
       } else {
         // If URL doesn't have connect param, show error
@@ -77,7 +77,7 @@ function Receive() {
       }
     } catch {
       // If it's not a valid URL, treat it as raw connect data
-      handleConnectData(inviteLink.trim());
+      await handleConnectData(inviteLink.trim());
       setInviteLink('');
     }
   };
