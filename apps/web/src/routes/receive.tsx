@@ -39,10 +39,12 @@ function Receive() {
   const [logs, setLogs] = useState<string[]>([]);
   const [inviteLink, setInviteLink] = useState('');
 
+  const addLog = (msg: string) => {
+    setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
+  };
+
   const { serverConfig, receivedAssets, connectionStatus, handleConnectData, resetClient } = useBaabClient({
-    addLog: (msg: string) => {
-      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
-    },
+    addLog,
   });
 
   useEffect(() => {
