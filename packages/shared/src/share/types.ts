@@ -1,5 +1,5 @@
 import type { ValueOf } from '../util';
-import type { LocalPushCredentials, VapidKeys } from '../settings/types';
+import type { LocalPushCredentials } from '../settings/types';
 
 // Re-export from settings for backward compatibility
 export type { VapidKeys } from '../settings/types';
