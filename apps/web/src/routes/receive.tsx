@@ -79,7 +79,7 @@ function Receive() {
       }
     } catch (error) {
       // If it's not a valid URL, treat it as raw connect data
-      addLog('Attempting to connect with provided data');
+      addLog('Treating input as raw connect data');
       await handleConnectData(inviteLink.trim());
       setInviteLink('');
     }
